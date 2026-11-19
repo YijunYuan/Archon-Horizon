@@ -14,7 +14,7 @@ import typer
 
 from archon_horizon.hgraph.cli import main as graph_main
 
-from .shared import agent_author, agent_provenance, load_workspace
+from .shared import agent_author, agent_provenance, load_workspace, select_project_root
 
 
 def _with_agent_identity(forwarded: list[str]) -> list[str]:
@@ -29,40 +29,6 @@ def _with_agent_identity(forwarded: list[str]) -> list[str]:
     if provenance and not any(value.startswith("provenance=") for value in enriched):
         enriched.extend(["--set", f"provenance={json.dumps(provenance, separators=(',', ':'))}"])
     return enriched
-
-
-def _project_root(workspace, project: str | None, cwd: Path) -> Path:
-    if project:
-        if project not in workspace.projects:
-            choices = ", ".join(workspace.projects) or "none configured"
-            raise typer.BadParameter(
-                f"unknown project {project!r}; available projects: {choices}",
-                param_hint="--project",
-            )
-        return workspace.project_path(project)
-
-    if len(workspace.projects) == 1:
-        return workspace.project_path(next(iter(workspace.projects)))
-
-    # Agents commonly run inside one project while ARCHON_HORIZON_ROOT points at
-    # the workspace. Resolve that unambiguous project without forcing -p.
-    here = cwd.resolve()
-    containing = []
-    for name in workspace.projects:
-        root = workspace.project_path(name).resolve()
-        try:
-            here.relative_to(root)
-        except ValueError:
-            continue
-        containing.append(root)
-    if len(containing) == 1:
-        return containing[0]
-
-    choices = ", ".join(workspace.projects) or "none configured"
-    raise typer.BadParameter(
-        f"select a project with --project; available projects: {choices}",
-        param_hint="--project",
-    )
 
 
 def graph(
@@ -88,7 +54,7 @@ def graph(
         return
 
     _, workspace = load_workspace(ctx.obj["root"])
-    root = _project_root(workspace, project, Path.cwd())
+    root = select_project_root(workspace, project, Path.cwd())
     try:
         code = graph_main(["--root", str(root), *forwarded], prog="horizon graph")
     except SystemExit as exc:

@@ -223,8 +223,7 @@ class ProjectConfig:
 
     @classmethod
     def from_raw(cls, name: str, data: dict[str, Any]) -> "ProjectConfig":
-        # A `vcs:` block here is legacy and ignored: the workspace has ONE ledger and
-        # projects have no repositories of their own.
+        # A project-level vcs block is legacy. Git ownership follows the checkout.
         freeze_raw = data.get("freeze", {})
         return cls(
             name=name,

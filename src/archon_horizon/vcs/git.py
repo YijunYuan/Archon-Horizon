@@ -1,31 +1,17 @@
-"""The workspace's single out-of-tree git — the one source of truth for history.
+"""Git access for project history and Horizon's fallback source ledger.
 
-The git model:
-
-* The workspace has ONE repository, kept out-of-tree at
-  ``.archon-horizon/vcs/workspace.git`` and driven via explicit ``--git-dir`` /
-  ``--work-tree`` flags so it never creates a root ``.git`` that would collide
-  with the user's own repo. It records a full snapshot per session: shared
-  Horizon state plus the scoped project worktrees (not a manifest/lockfile —
-  the actual files). There is no separate per-project repository; a project's
-  history is just this repo filtered by pathspec (``git log -- <project>``).
-* A project never carries a real ``.git/`` at its root (nested repos confuse
-  parent-git). A project cloned with its own ``.git`` is neutralized (renamed
-  aside) so its files, not a submodule gitlink, are committed.
-* Structured provenance (run / round / role / session / task / projects) rides
-  each commit as **git trailers**, so agents and the dashboard can query it
-  deterministically instead of parsing prose.
-
-Everything here shells out to ``git`` and degrades gracefully when ``git`` is
-absent (``git_available()`` is False; constructors still build).
+Each member owns its repository. The private workspace ledger remains
+readable for dashboards showing runs made by earlier versions.
 """
 
 from __future__ import annotations
 
 import os
 import random
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -133,7 +119,7 @@ def git_available() -> bool:
 
 
 def user_repo_git_dir(root: Path) -> Path | None:
-    """Return ``<root>/.git`` when the workspace has a normal user repository."""
+    """Return a checkout's own .git directory or worktree/submodule gitfile."""
     candidate = Path(root).resolve() / ".git"
     # Plain dir or gitfile (worktree / submodule pointer).
     if candidate.is_dir() or candidate.is_file():
@@ -407,8 +393,11 @@ exit 0
 # ``<state>/bin/hgit`` so an agent commits with normal git semantics WITHOUT
 # exporting GIT_DIR/GIT_WORK_TREE globally — which would redirect ``lake`` and the
 # project's own git too. Reads the ledger paths from the session env.
-_LEDGER_GIT_WRAPPER = """#!/bin/sh
-# Auto-installed by Archon Horizon. `git` against the workspace ledger.
+_LEDGER_GIT_WRAPPER = f"""#!/bin/sh
+# Auto-installed by Archon Horizon.
+if [ -n "$HORIZON_PROJECT_ROOTS" ]; then
+  exec {shlex.quote(sys.executable)} -m archon_horizon.vcs.project_git "$@"
+fi
 exec git --git-dir="$HORIZON_LEDGER_GIT_DIR" --work-tree="$HORIZON_LEDGER_WORK_TREE" "$@"
 """
 
@@ -421,30 +410,69 @@ def install_ledger_git_wrapper(state_dir: Path) -> Path | None:
         bin_dir = Path(state_dir) / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
         path = bin_dir / "hgit"
-        path.write_text(_LEDGER_GIT_WRAPPER, "utf-8")
-        path.chmod(0o755)
+        if not path.exists() or path.read_text("utf-8") != _LEDGER_GIT_WRAPPER:
+            with tempfile.NamedTemporaryFile(mode="w", dir=bin_dir, delete=False) as tmp:
+                tmp.write(_LEDGER_GIT_WRAPPER)
+                os.chmod(tmp.name, 0o755)
+            os.replace(tmp.name, path)
         return path
     except OSError:
         return None
 
 
-def neutralize_nested_git(work_tree: Path) -> str | None:
-    """Rename a project's in-tree ``.git`` directory to ``.git.disabled``.
+def restore_project_git(root: Path) -> bool:
+    """Restore the directory renamed by 0.1.5, only for an unambiguous checkout."""
+    dot = root / ".git"
+    if os.path.lexists(dot):
+        return False
+    backups = [p for p in (root / ".git.disabled", root / ".git-disabled") if p.exists()]
+    if len(backups) > 1:
+        raise GitError(f"Two disabled Git directories in {root}; select the original checkout before registering it")
+    if not backups:
+        return False
+    backup = backups[0]
+    if backup.is_symlink() or not (backup / "HEAD").is_file():
+        return False
+    if not git_available() or _run(
+        ["rev-parse", "--is-bare-repository"], git_dir=backup, cwd=root, check=False,
+    ) != "false":
+        return False
+    try:
+        backup.rename(dot)
+    except FileNotFoundError:
+        if dot.exists():  # Another run already restored the same project.
+            return False
+        raise
+    return True
 
-    Archon Horizon gives each project an *out-of-tree* git, so an in-tree ``.git``
-    is an anomaly: git would record the project as a submodule **gitlink** (mode
-    160000 — a bare commit pointer) instead of committing its files. Renaming the
-    nested repo aside (it is then covered by the ``.git.disabled/`` exclude) makes
-    the ledger store the actual files. Returns the new path if it renamed, else
-    ``None``. Idempotent; never deletes data (skips if ``.git.disabled`` exists)."""
-    dot = work_tree / ".git"
-    if not dot.is_dir():  # absent, or a gitfile/worktree pointer — leave alone
-        return None
-    disabled = work_tree / ".git.disabled"
-    if disabled.exists():
-        return None
-    dot.rename(disabled)
-    return str(disabled)
+
+def ensure_project_git(root: Path) -> None:
+    """Preserve an existing checkout or initialize an independent, empty repository."""
+    restore_project_git(root)
+    if os.path.lexists(root / ".git"):
+        return
+    if not git_available():
+        raise GitError(f"Git is required to initialize the member at {root}")
+    root.mkdir(parents=True, exist_ok=True)
+    root = root.resolve()
+    dot = root / ".git"
+    _run(["-c", f"init.defaultBranch={_DEFAULT_BRANCH}", "init", "--quiet"],
+         git_dir=dot, work_tree=root, cwd=root)
+    # Only Horizon-created repositories receive these local defaults.
+    with (dot / "info" / "exclude").open("a", encoding="utf-8") as exclude:
+        exclude.write("\n/.lake/\n/lake-packages/\n/hgraph/\n*.olean\n*.ilean\n")
+
+
+def move_project_checkout(root: Path, destination: Path) -> None:
+    """Keep Git's worktree links valid when the user archives a member."""
+    if (root / ".git").is_file():
+        # Git updates the worktree back-pointer and rejects non-movable
+        # checkouts (e.g. a submodule) before moving any files.
+        _run(["worktree", "move", str(root.resolve()), str(destination.resolve())], cwd=root)
+        return
+    shutil.move(str(root), str(destination))
+    if (destination / ".git" / "worktrees").is_dir():
+        _run(["worktree", "repair"], cwd=destination)
 
 
 def _ensure_repo_hygiene(git_dir: Path, *, extra_excludes: Sequence[str] = ()) -> None:
@@ -884,26 +912,15 @@ class WorkspaceGit:
         """Workspace-relative files present at ``sha``, optionally path-scoped."""
         if not self.is_repo():
             return ()
-        args = ["ls-tree", "-r", "--name-only", sha]
+        args = ["ls-tree", "-r", "-z", "--name-only", sha]
         clean_paths = [p for p in paths if p]
         if clean_paths:
             args += ["--", *clean_paths]
         out = self._run(args, check=False)
-        return tuple(line.strip() for line in out.splitlines() if line.strip())
+        return tuple(path for path in out.split("\0") if path)
 
     def files_in_commit(self, sha: str) -> tuple[str, ...]:
         return _files_in_commit(self.git_dir, self.root, sha)
-
-    def unstage_gitlink(self, path: str) -> bool:
-        """If ``path`` is staged as a submodule gitlink (mode 160000) but is now a
-        plain directory on disk, drop the gitlink so a normal ``add`` re-tracks its
-        files. Converts an already-committed gitlink (from before the nested .git
-        was neutralized) into a real tree. Returns True if it dropped one."""
-        listing = self._run(["ls-files", "-s", "--", path], check=False)
-        if not listing.startswith("160000"):
-            return False
-        self._run(["rm", "--cached", "-q", "--ignore-unmatch", "--", path], check=False)
-        return True
 
     def list_non_ledger_tracked_paths(self) -> tuple[str, ...]:
         """Tracked paths that current policy says must not live in the ledger.
@@ -1139,6 +1156,27 @@ class WorkspaceGit:
         )
         return "\n\n".join(v.strip() for v in raw.split("\x1e") if v.strip())
 
+    def session_commit_refs(self, key: str) -> list[str]:
+        """Identify native commits by session trailer or a plain commit's reflog entry."""
+        tagged = self._run([
+            "log", "--all", "--fixed-strings", f"--grep=Archon-Session-Id: {key}",
+            "--format=%H%x00%(trailers:key=Archon-Session-Id,valueonly)",
+        ], check=False)
+        refs = [line.split("\0", 1)[0] for line in tagged.splitlines() if line.endswith("\0" + key)]
+        # A shell inside the agent may also call ordinary git directly. Git writes
+        # our process-local action followed by the commit subject for a commit.
+        # Checkout/reset/fast-forward records use their own actions instead.
+        action = f"horizon-{key}"
+        entries = self._run([
+            "reflog", "show", "--fixed-strings", f"--grep-reflog={action}",
+            "--format=%H%x00%gs%x00%s", "HEAD",
+        ], check=False)
+        for line in entries.splitlines():
+            fields = line.split("\0", 2)
+            if len(fields) == 3 and fields[1] == f"{action}: {fields[2]}":
+                refs.append(fields[0])
+        return list(dict.fromkeys(refs))
+
     def session_commits_detailed(self, run_id: str, session: str) -> list[dict[str, str]]:
         """Commit rows for one run/session, oldest-first, with provenance.
 
@@ -1196,20 +1234,21 @@ class WorkspaceGit:
         A ``-`` count (binary) reads as 0."""
         if not self.is_repo():
             return []
-        args = ["diff", "--numstat", base or self._EMPTY_TREE, sha]
+        args = (["diff", base, sha] if base else ["diff-tree", "-r", "--root", "--no-commit-id", sha])
+        args += ["--numstat", "--no-renames", "-z"]
         if paths:
             args += ["--", *paths]
         rows: list[tuple[int, int, str]] = []
         # Include untracked files when diffing the working tree, so a brand-new
         # file the running session just created still shows up.
         untracked = self._worktree_untracked(paths) if sha is None else []
-        for line in (self._run(args, check=False) or "").splitlines():
-            parts = line.split("\t")
+        for line in (self._run(args, check=False) or "").split("\0"):
+            parts = line.split("\t", 2)
             if len(parts) != 3:
                 continue
             add = int(parts[0]) if parts[0].isdigit() else 0
             dele = int(parts[1]) if parts[1].isdigit() else 0
-            rows.append((add, dele, parts[2].strip()))
+            rows.append((add, dele, parts[2]))
         seen = {r[2] for r in rows}
         for path in untracked:
             if path not in seen:
@@ -1231,7 +1270,8 @@ class WorkspaceGit:
         if sha is None:
             args = ["diff", "--no-color", base or self._EMPTY_TREE]
         else:
-            args = ["diff", "--no-color", base or self._EMPTY_TREE, sha]
+            args = (["diff", "--no-color", base, sha] if base else
+                    ["diff-tree", "-r", "--root", "--no-commit-id", "--no-color", "-p", sha])
         if paths:
             args += ["--", *paths]
         text = self._run(args, check=False) or ""

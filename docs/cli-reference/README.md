@@ -118,12 +118,12 @@ Artifacts live under the active session's `attempts/` directory.
 
 ### `horizon check`
 
-Run `lake build` or one standalone Lean file while holding a workspace-wide
+Run `lake build` or one standalone Lean file while holding a project-local
 check lock. Identical concurrent successful requests are reused after waiting;
 results and timeouts are recorded under the active session's `checks/`
 directory. ([`commands/check.py`](../../src/archon_horizon/commands/check.py))
 
-- `horizon check [targets...] [--timeout <seconds>] [--json]`
+- `horizon check [--project NAME] [targets...] [--timeout <seconds>] [--json]`
 - `horizon check --lean <file> [--timeout <seconds>] [--json]`
 
 ### `horizon benchmark`

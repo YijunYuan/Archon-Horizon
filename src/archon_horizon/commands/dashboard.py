@@ -97,18 +97,11 @@ class DashboardCommand:
     def _commit_export(self, out: Path, workflow_path: Path | None) -> str | None:
         """Commit the exported dashboard (and Pages workflow) for GitHub publish.
 
-        Prefer the user's root ``.git`` when present: that is the repository
-        pushed to GitHub / GitHub Pages. Fall back to the out-of-tree Horizon
-        ledger only when there is no user repo (ledger-only workspaces).
-
-        The static export already materializes roadmap/inbox/graph/run snapshots
-        under ``dashboard/data/`` — it does **not** need raw hgraph node files or
-        live ``.archon-horizon/runs`` in git history. Agents keep committing Lean
-        and durable Horizon state to the ledger; publish is a separate snapshot.
+        Export files to disk. When the user has a workspace-level publish
+        repository, commit only the selected snapshot and workflow paths there.
         """
         from archon_horizon.vcs.git import (
             GitError,
-            WorkspaceGit,
             commit_user_repo_paths,
             git_available,
             user_repo_git_dir,
@@ -143,16 +136,8 @@ class DashboardCommand:
             else:
                 log.info("static dashboard already up to date in the user repository.")
             return sha
-        try:
-            git = WorkspaceGit(self.root)
-            git.init()
-            sha = git.commit(message, paths=paths)
-        except GitError as exc:
-            log.warn(f"could not commit exported dashboard: {exc}")
-            return None
-        if sha:
-            log.info(f"committed exported dashboard to the workspace ledger ({sha[:10]}).")
-        return sha
+        log.info("Exported dashboard files are ready in the output directory.")
+        return None
 
     def _report_workflow(
         self, out: Path, workflow_path: Path | None, status: str, *, committed: str | None

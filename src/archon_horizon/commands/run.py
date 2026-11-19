@@ -283,11 +283,8 @@ class RunCommand:
         from archon_horizon.core.events import Event
         from archon_horizon.core.scratch import remove_session_tmp, scratch_environment
         from archon_horizon.harnesses.command import _horizon_bin
-        from archon_horizon.vcs.git import WorkspaceGit, install_ledger_git_wrapper
-        from archon_horizon.vcs.integration import (
-            integrate_workspace_baseline,
-            integrate_workspace_session,
-        )
+        from archon_horizon.vcs.integration import project_revisions
+        from archon_horizon.vcs.project_git import session_git_environment, finish_project_session
 
         from .interactive import (
             claude_session_file,
@@ -351,6 +348,8 @@ class RunCommand:
         # otherwise a valid id created by a headless project run is invisible to an
         # interactive process launched from the workspace root.
         cwd_project = resume_project or (task.project if task is not None else None)
+        if not cwd_project and len(projects) == 1:
+            cwd_project = projects[0]
         interactive_cwd = self.root
         if cwd_project and cwd_project in workspace.projects:
             interactive_cwd = workspace.project_path(cwd_project)
@@ -443,27 +442,9 @@ class RunCommand:
         session.write_meta({**base_meta, "status": "running"})
         log.info(f"Recording this interactive session under run {runlog.id} — visible in the dashboard/Log.")
 
-        baseline = integrate_workspace_baseline(
-            workspace,
-            run_id=runlog.id,
-            projects=projects,
-        )
-        ledger = WorkspaceGit(workspace.root)
-        session_base_sha = baseline.sha or ledger.current_sha()
-        base_meta["workspace_base_sha"] = session_base_sha
+        scoped_projects = projects or tuple(workspace.projects)
+        base_meta["project_base_shas"] = project_revisions(workspace, scoped_projects, initialize=True)
         session.write_meta({**base_meta, "status": "running"})
-        stores.events.append(Event(
-            type="workspace.run_baseline",
-            id=hashlib.sha256(f"baseline:{runlog.id}".encode()).hexdigest(),
-            actor="orchestrator",
-            data={
-                "run_id": runlog.id,
-                "sha": baseline.sha,
-                "changed": baseline.changed,
-                "files": list(baseline.files),
-                "projects": list(projects),
-            },
-        ))
 
         scratch_dir, scratch_env = scratch_environment(
             workspace,
@@ -484,8 +465,7 @@ class RunCommand:
             "ARCHON_HORIZON_AGENT_ROLE": role,
             "ARCHON_HORIZON_ROUND": "0",
             "ARCHON_HORIZON_ROUNDS": "1",
-            "HORIZON_LEDGER_GIT_DIR": str(WorkspaceGit(workspace.root).git_dir),
-            "HORIZON_LEDGER_WORK_TREE": str(workspace.root.resolve()),
+            **session_git_environment(workspace, projects, session.path),
         }
         if task_id:
             session_env["ARCHON_HORIZON_TASK"] = task_id
@@ -493,9 +473,6 @@ class RunCommand:
             session_env["ARCHON_HORIZON_TASK_TITLE"] = task.title
         if projects:
             session_env["ARCHON_HORIZON_PROJECTS"] = ",".join(projects)
-        wrapper = install_ledger_git_wrapper(workspace.state_path)
-        if wrapper is not None:
-            session_env["HORIZON_GIT"] = str(wrapper.resolve())
         horizon_bin = _horizon_bin()
         if horizon_bin:
             session_env.setdefault("HORIZON_BIN", horizon_bin)
@@ -570,13 +547,7 @@ class RunCommand:
             clear_process_marker(runlog.path)
             remove_session_tmp(scratch_dir)
 
-        agent_head = ledger.current_sha()
-        candidate_shas = ledger.commit_shas_between(session_base_sha, agent_head)
-        candidate_rows = ledger.commits_detailed_by_refs(candidate_shas)
-        commit_shas = [
-            row["sha"] for row in candidate_rows
-            if not row.get("session") or row.get("session") == session.name
-        ]
+        project_commits = finish_project_session(workspace, session.path)
         report_text = latest_report_text(session.transcript_path)
         if not report_text:
             report_text = (
@@ -585,15 +556,6 @@ class RunCommand:
                 f"mirrored into this run's transcript as it happened. Exit code {returncode}.\n"
             )
         (session.path / "report.md").write_text(report_text.rstrip() + "\n", "utf-8")
-        integration = integrate_workspace_session(
-            workspace,
-            run_id=runlog.id,
-            session=session.name,
-            role=role,
-            round_index=0,
-            task_id=task_id,
-            projects=projects,
-        )
         stores.events.append(Event(
             type="workspace.session.integrated",
             id=hashlib.sha256(f"integration:{runlog.id}:{session.name}".encode()).hexdigest(),
@@ -603,10 +565,8 @@ class RunCommand:
                 "session": session.name,
                 "role": role,
                 "task_id": task_id,
-                "projects": list(integration.projects),
-                "workspace_commit": integration.workspace_commit,
-                "workspace_commit_error": integration.workspace_commit_error,
-                "files": list(integration.workspace_files),
+                "projects": list(scoped_projects),
+                "project_commits": project_commits,
             },
         ))
         session.write_meta({
@@ -614,12 +574,8 @@ class RunCommand:
             "status": "ok" if returncode == 0 else "failed",
             "ended_at": utc_now().isoformat(),
             "returncode": returncode,
-            "workspace_agent_sha": agent_head,
-            "commit_shas": commit_shas,
-            "workspace_commit": integration.workspace_commit,
+            "project_commits": project_commits,
         })
-        if integration.workspace_commit_error:
-            log.warn(f"Could not integrate interactive session: {integration.workspace_commit_error}")
 
     def _install_native_subagents(self, cfg, workspace) -> None:
         """Compile descriptors into each engine's workspace-local native agents.

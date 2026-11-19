@@ -90,6 +90,8 @@ def horizon_task_prompt(context: HorizonContext) -> str:
         "acknowledge unread conversations before ordinary advisory inbox material.\n\n"
         "# Task\n"
         f"{_task_block(context)}\n\n"
+        "Run Lake and commit from each owning project directory. Use `$HORIZON_GIT` "
+        "with explicit file paths for proof commits.\n\n"
         "This is a headless, one-shot session: advance the REAL objective, commit each\n"
         "verified unit and any final edits, keep operational comments to the delta.\n"
         "Before the final report, for any new certificate/context wrapper,\n"

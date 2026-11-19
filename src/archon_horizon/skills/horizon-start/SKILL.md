@@ -47,11 +47,11 @@ Work down the list; the first match is your best guess.
 
 **An earlier horizon sibling has no `report.md`** → *resume after a crash or
 kill.* Its work is half-done and possibly half-committed. Read its commits in
-the ledger first (they are the durable result), then inspect any `attempts/`
+the owning project’s Git history first (they are the durable result), then inspect any `attempts/`
 artifacts it deliberately preserved, then the tail of its
 transcript to see what it was in the middle of — `usage --json` `paused` gives
 the reason it died (usage limit, budget, auth), and `recent_failure_reasons`
-shows rate-limit pressure that may still be there. Trust the ledger over the
+shows rate-limit pressure that may still be there. Trust the project history over the
 transcript: uncommitted work survives only when it was explicitly preserved
 under `attempts/`. If the dead session shares your `ARCHON_HORIZON_TASK`, you are continuing
 its exact work — pick up its front rather than opening a new one.
@@ -66,8 +66,8 @@ ledger.
 **`ARCHON_HORIZON_ROUND` is `0` and no horizon sibling exists** → *first agent
 of the run.* Nobody handed you anything **in this run** — but the workspace is
 almost never greenfield. Earlier runs live under `.archon-horizon/runs/`; the
-roadmap, the inbox and the ledger carry their conclusions. Skim the roadmap and
-recent ledger history before deciding a strategy that a previous run already
+roadmap, the inbox and the project histories carry their conclusions. Skim the roadmap and
+recent project history before deciding a strategy that a previous run already
 tried and rejected. If `roadmap list` is empty (or has no item covering this
 task's objective), **draft the strategy outline before deep proof work** —
 `roadmap add` nested goals for the source-facing frontier and the next producers,
@@ -78,7 +78,7 @@ source-facing chapter in the same orientation pass (skill:
 
 **`ARCHON_HORIZON_RUN` is unset** → *not launched by the orchestrator* (an
 interactive or hand-driven session). No run context exists to reconstruct;
-orient from workspace state — roadmap, inbox, ledger — and say where things
+orient from workspace state — roadmap, inbox, project history — and say where things
 stand before proposing work.
 
 One caveat about round numbers. `ARCHON_HORIZON_ROUND` is 0-based and reliable
@@ -90,7 +90,7 @@ the run's original plan.)
 
 ## Then, before you start
 
-- **`horizon ps` said another run is live?** You share one ledger branch with it.
+- **`horizon ps` said another run is live?** Check whether it is working in the same project and branch.
   Commit in small coherent pieces and expect to see its commits interleaved.
 - **Timestamps are context.** A predecessor that ended 90 seconds ago probably
   left a warm build; one that ended last week may have left a workspace that no

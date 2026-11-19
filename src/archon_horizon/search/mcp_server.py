@@ -11,6 +11,7 @@ Run as: ``python -m archon_horizon.search.mcp_server`` (cwd = workspace root).
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -104,7 +105,7 @@ def _error(msg_id, code: int, message: str) -> dict:
 
 
 def main() -> int:
-    root = Path.cwd()
+    root = Path(os.environ.get("ARCHON_HORIZON_ROOT") or Path.cwd())
     for raw in sys.stdin:
         raw = raw.strip()
         if not raw:

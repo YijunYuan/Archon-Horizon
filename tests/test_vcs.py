@@ -328,36 +328,6 @@ def test_commit_raises_after_exhausting_ref_race_retries(tmp_path: Path, monkeyp
         git.commit("doomed")
 
 
-def test_concurrent_baseline_commits_serialize(tmp_path: Path) -> None:
-    # Several `horizon run` processes against one shared ledger start within
-    # the same second; the cross-process lock + ref-race retry must let every
-    # baseline land instead of failing with "cannot lock ref 'HEAD'".
-    import threading
-
-    from archon_horizon.core.workspace import Workspace
-    from archon_horizon.vcs.integration import integrate_workspace_baseline
-
-    _configure_identity(tmp_path)
-    (tmp_path / "config.yaml").write_text("projects: {}\n", "utf-8")
-    workspace = Workspace(name="ws", root=tmp_path)
-
-    outcomes = {}
-
-    def baseline(run_id: str) -> None:
-        outcomes[run_id] = integrate_workspace_baseline(workspace, run_id=run_id)
-
-    threads = [threading.Thread(target=baseline, args=(f"run-{i}",)) for i in range(4)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    for run_id, outcome in outcomes.items():
-        assert outcome.error is None, f"{run_id}: {outcome.error}"
-        assert outcome.sha, f"{run_id} produced no baseline commit"
-    assert len({o.sha for o in outcomes.values()}) == 4  # four distinct commits
-
-
 def _plain_git(git: WorkspaceGit, *args: str, env: dict | None = None):
     # Run plain git against the ledger the way an agent's `hgit` does —
     # through the repo's hooks, no private-index plumbing from WorkspaceGit.

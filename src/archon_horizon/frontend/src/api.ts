@@ -229,6 +229,7 @@ export interface ChangeRollup {
 // One commit's own change (message + per-file table vs its git parent) — the
 // commit-granular "progress" view in the Logs page.
 export interface CommitChange {
+  project?: string;
   sha: string;
   short_sha: string;
   subject: string;
@@ -319,8 +320,8 @@ export interface SessionCommits {
 export interface FileDiff { path: string; available: boolean; diff: string; truncated?: boolean }
 // Raw interpolation (no encode): run ids/sessions/paths are bare and the path
 // must match the Python endpoint registry exactly for static-mode hashing.
-export const getSessionFileDiff = (runId: string, session: string, path: string, sha: string) =>
-  getJson<FileDiff>(`/api/session/file-diff?run=${runId}&session=${session}&path=${path}&sha=${sha}`);
+export const getSessionFileDiff = (runId: string, session: string, path: string, sha: string, project?: string) =>
+  getJson<FileDiff>(`/api/session/file-diff?run=${runId}&session=${session}&path=${path.split('/').map(encodeURIComponent).join('/')}&sha=${sha}${project ? `&project=${encodeURIComponent(project)}` : ''}`);
 // Per-commit change view for one session (message + per-file table per commit).
 export const getSessionCommits = (
   runId: string,

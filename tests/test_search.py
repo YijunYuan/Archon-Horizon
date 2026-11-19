@@ -153,3 +153,16 @@ def test_index_build_excludes_build_artifacts_and_caches(tmp_path: Path) -> None
     assert cache.exists()
     again = load_or_build_index(tmp_path, cfg)
     assert {d.name for d in again.declarations} == names
+
+
+def test_separate_dependency_checkouts_keep_their_sources(tmp_path: Path) -> None:
+    _make_workspace(tmp_path)
+    with (tmp_path / "config.yaml").open("a") as config:
+        config.write("  other: {path: other}\n")
+    package = tmp_path / "other/.lake/packages/mathlib"
+    package.mkdir(parents=True)
+    (package / "Local.lean").write_text("def otherLocalOnly := 2\n")
+    index = load_or_build_index(tmp_path, load_config(tmp_path))
+    assert index.search_name("otherLocalOnly", library="mathlib@other")
+    assert not index.search_name("otherLocalOnly", library="mathlib@proj")
+    assert index.search_name("otherLocalOnly", library="mathlib")

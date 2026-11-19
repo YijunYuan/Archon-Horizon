@@ -10,6 +10,11 @@ recommendation: >-
   any result.
 ---
 
+Run Lake from the registered project containing the proof. Each member owns its
+`lakefile.toml` or `lakefile.lean`, `lean-toolchain`, `lake-manifest.json`, and
+`.lake/`. Use `horizon check --project NAME` from the workspace root. For a
+multi-project task, run each member's checks in its own package environment.
+
 ## Required proof loop
 
 Load this skill before editing a Lean file. Before the first proof edit, invoke

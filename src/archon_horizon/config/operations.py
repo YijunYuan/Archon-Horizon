@@ -22,7 +22,7 @@ import yaml
 
 from archon_horizon.core.events import Event
 from archon_horizon.store.base import EventLog
-from archon_horizon.vcs.git import GitError, WorkspaceGit, git_available, neutralize_nested_git
+from archon_horizon.vcs.git import ensure_project_git, move_project_checkout
 
 from .loader import CONFIG_FILENAME
 
@@ -123,29 +123,12 @@ def add_project(
     }
     if build_command:
         entry["build"] = {"command": build_command}
-    projects[name] = entry
-    _save_raw(root, data)
     project_dir = root / path
     project_dir.mkdir(parents=True, exist_ok=True)
-    vcs_error = None
-    if git_available():
-        try:
-            # If the project was cloned with its own in-tree .git, rename it aside
-            # so its files (not a submodule gitlink) are tracked, then record the
-            # new project in the single workspace ledger so its tree is tracked
-            # from registration.
-            disabled = neutralize_nested_git(project_dir)
-            if disabled:
-                _emit(event_log, "workspace.project.nested_git_disabled", project=name, path=disabled)
-            wsgit = WorkspaceGit(root)
-            wsgit.init()
-            wsgit.unstage_gitlink(path)
-            wsgit.commit(f"workspace: register project {name}", paths=["config.yaml", path])
-        except GitError as exc:
-            vcs_error = str(exc)
+    ensure_project_git(project_dir)
+    projects[name] = entry
+    _save_raw(root, data)
     _emit(event_log, "workspace.project.added", project=name, path=path)
-    if vcs_error:
-        _emit(event_log, "workspace.project.vcs_init_failed", project=name, error=vcs_error)
 
 
 def remove_project(root: Path, name: str, *, event_log: EventLog | None = None) -> None:
@@ -168,7 +151,9 @@ def archive_project(root: Path, name: str, *, event_log: EventLog | None = None)
     dest = root / data.get("workspace", {}).get("state_dir", ".archon-horizon") / "archive" / name
     if src.exists():
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src), str(dest))
+        if dest.exists():
+            raise ValueError(f"archive destination already exists: {dest}")
+        move_project_checkout(src, dest)
     _save_raw(root, data)
     _emit(event_log, "workspace.project.archived", project=name, archived_to=str(dest))
     return dest
@@ -187,12 +172,19 @@ def merge_projects(
     source_dir = root / projects[source]["path"]
     dest_dir.mkdir(parents=True, exist_ok=True)
     if source_dir.exists():
-        for child in source_dir.iterdir():
+        # Git metadata, Lake configuration, and build outputs belong to the
+        # source checkout even when the user explicitly moves its source files.
+        private = {".git", ".git.disabled", ".git-disabled", ".gitmodules", ".lake", "lakefile.toml", "lakefile.lean",
+                   "lake-manifest.json", "lean-toolchain", ".gitignore", ".gitattributes"}
+        children = [p for p in source_dir.iterdir() if p.name not in private]
+        for child in children:
             target = dest_dir / child.name
-            if target.exists():
+            if target.exists() or target.is_symlink():
                 raise ValueError(f"merge conflict: {target} already exists")
-            shutil.move(str(child), str(target))
-        shutil.rmtree(source_dir, ignore_errors=True)
+        for child in children:
+            shutil.move(str(child), str(dest_dir / child.name))
+        if not any(source_dir.iterdir()):
+            source_dir.rmdir()
     del projects[source]
     _save_raw(root, data)
     _emit(event_log, "workspace.project.merged", dest=dest, source=source)

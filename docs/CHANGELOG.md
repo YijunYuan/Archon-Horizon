@@ -13,6 +13,13 @@ minor releases; `horizon init --update` migrates a workspace's managed files.
   unfinished orientation. Horizon should author a complete source-facing
   chapter (statements, proofs, `\uses`, cites) before or with the first
   Lean, and keep `.tex` the live route as strategy changes.
+- Members keep their own Git repositories, Lake configurations, dependencies,
+  and build directories. Horizon initializes Git inside an unversioned member
+  and can restore a checkout disabled by 0.1.5 with `horizon init --update`.
+- The live dashboard reads project commits and file diffs during each session.
+  Existing workspace ledgers remain available for historical sessions.
+- `horizon check --project NAME` selects a member from the workspace root.
+  A Lean file selects its owning member, and checks serialize per project.
 
 ## [0.1.5] — 2026-09-04
 

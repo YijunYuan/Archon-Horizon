@@ -8,8 +8,7 @@ Each project may carry an **hgraph**: a plain-files semantic graph under
 declaration, typed edges (`uses` = the hard dependency DAG, `formalizes` =
 informal↔formal identity). `horizon graph sync` (run automatically at run boundaries)
 reconciles the blueprint + Lean sources into it; your **authored** additions
-(comments, reviews, metadata) are never touched by sync. The files are
-committed to the workspace ledger like everything else.
+(comments, reviews, metadata) are never touched by sync. Each member owns its graph directory and its policy for tracking graph files.
 
 Use `"$HORIZON_BIN" graph -p <project> …`; when a workspace has one project,
 `-p` is optional. Address nodes by `label:<latex-label>` or

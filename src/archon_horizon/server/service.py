@@ -52,9 +52,10 @@ from archon_horizon.transcript.sink import (
 )
 from archon_horizon.transcript.subagents import materialize_subagent_sessions
 from archon_horizon.server.git_api import get_git_log, get_git_diff
+from archon_horizon.vcs.project_git import project_session_commits
 from archon_horizon.lean.benchmark import benchmark_workspace
 from archon_horizon.server.source_api import file_stats, list_lean_files, read_lean_file
-from archon_horizon.vcs.git import WorkspaceGit, git_available
+from archon_horizon.vcs.git import WorkspaceGit, git_available, user_repo_git_dir
 
 
 # Per-node blueprint fields that carry full text (a declaration's LaTeX statement,
@@ -705,13 +706,12 @@ class WorkspaceService:
     def _project_history(self, name: str, *, limit: int = _PROJECT_HISTORY_LIMIT) -> list[dict[str, Any]]:
         if not git_available():
             return []
-        git = WorkspaceGit(self.workspace.root)
+        project = self._project_path(name)
+        native = user_repo_git_dir(project)
+        git = WorkspaceGit(project, native) if native else WorkspaceGit(self.workspace.root)
         if not git.is_repo():
             return []
-        try:
-            rel = self._project_rel_path(name)
-        except (KeyError, ValueError):
-            return []
+        rel = "" if native else self._project_rel_path(name)
         paths = (rel,) if rel else ()
         commit_limit = max(1, min(_PROJECT_HISTORY_MAX_LIMIT, int(limit)))
         commits = list(reversed(git.log(paths=paths, limit=commit_limit)))
@@ -1168,9 +1168,10 @@ class WorkspaceService:
                 "role": "system",
                 "name": "run baseline",
                 "workspace_sha": sha,
+                "project_heads": data.get("project_heads", {}),
                 "projects": data.get("projects") or [],
             },
-            "status": "completed" if sha else "failed",
+            "status": "completed" if sha or "project_heads" in data else "failed",
             "model": None,
             "effort": None,
             "started_at": created_at,
@@ -1206,7 +1207,9 @@ class WorkspaceService:
         paths: list[str] = []
         for name in names:
             if name in self.workspace.projects:
-                paths.append(self.workspace.project_path(name).relative_to(self.root).as_posix())
+                path = self.workspace.project_path(name)
+                if path.is_relative_to(self.root):
+                    paths.append(path.relative_to(self.root).as_posix())
         return tuple(paths)
 
     @staticmethod
@@ -1476,6 +1479,7 @@ class WorkspaceService:
                 "has_more": False,
             }
         info = self._session_integrations(run_id).get(session) or {}
+        session_log = None
         try:
             session_log = self._find_session_log(self.stores.run_logs.get(run_id), session)
             session_meta = session_log.read_meta() if session_log is not None else {}
@@ -1516,12 +1520,27 @@ class WorkspaceService:
         ]
         paths = self._project_paths(projects) or tuple()
         commits_out: list[dict[str, Any]] = []
-        rows = wsgit.session_commits_detailed(run_id, session)
-        known = {row["sha"] for row in rows}
-        for row in self._recovered_session_commits(run_id, session, wsgit, session_meta):
-            if row["sha"] not in known:
-                rows.append(row)
-                known.add(row["sha"])
+        native_session = session_log is not None and (session_log.path / "project-git.json").is_file()
+        rows = []
+        if not native_session and wsgit.is_repo():
+            rows = wsgit.session_commits_detailed(run_id, session)
+            known = {row["sha"] for row in rows}
+            for row in self._recovered_session_commits(run_id, session, wsgit, session_meta):
+                if row["sha"] not in known:
+                    rows.append(row)
+                    known.add(row["sha"])
+        native_repos: dict[str, WorkspaceGit] = {}
+        if session_log:
+            for name, refs in project_session_commits(self.workspace, session_log.path).items():
+                if name not in self.workspace.projects:
+                    continue
+                project = self.workspace.project_path(name)
+                native = user_repo_git_dir(project)
+                if native:
+                    repo = WorkspaceGit(project, native)
+                    native_repos[name] = repo
+                    for row in repo.commits_detailed_by_refs(refs):
+                        rows.append({**row, "project": name})
         rows.sort(key=lambda row: row.get("date", ""), reverse=True)  # latest commit first (GH #6)
         total = len(rows)
         commit_counts: dict[str, int] = {}
@@ -1544,10 +1563,16 @@ class WorkspaceService:
             rows = rows[start:start + page_size]
         for r in rows:
             sha = r["sha"]
-            summary = session_change_summary(self.root, sha, paths, base=None)
+            project_name = r.get("project")
+            repo = native_repos.get(project_name) if project_name else None
+            summary = session_change_summary(
+                repo.root if repo else self.root, sha, () if repo else paths,
+                git_dir=repo.git_dir if repo else None,
+            )
             commits_out.append({
                 "sha": sha,
                 "short_sha": sha[:10],
+                "project": project_name,
                 "subject": r.get("subject", ""),
                 "summary": r.get("summary", ""),
                 "created_at": r.get("date", ""),
@@ -1586,14 +1611,20 @@ class WorkspaceService:
             "has_more": next_offset is not None,
         }
 
-    def session_file_diff(self, run_id: str, session: str, path: str, *, sha: str) -> dict[str, Any]:
+    def session_file_diff(self, run_id: str, session: str, path: str, *, sha: str, project: str = "") -> dict[str, Any]:
         """Unified diff of one file in ONE commit (vs that commit's own parent) —
         the click-to-diff behind the commit cards. Progress is commit-granular;
         there is no aggregate per-session diff any more (that was the old
         "changes" view, superseded by the git view)."""
         from archon_horizon.server.changes_api import session_file_diff
 
-        return session_file_diff(self.root, sha, path, base=None)
+        if project:
+            root = self._project_path(project)
+            native = user_repo_git_dir(root)
+            if native is None:
+                return {"path": path, "available": False, "diff": ""}
+            return session_file_diff(root, sha, path, git_dir=native)
+        return session_file_diff(self.root, sha, path)
 
     def _inbox_provider_state(self) -> dict[str, Any]:
         return {
@@ -1702,7 +1733,7 @@ class WorkspaceService:
         except Exception as exc:  # warming must never crash the server
             log.warn(f"search index warm-up failed: {exc}")
 
-    def _blueprint_nodes(self, project: str | None) -> tuple[list[tuple[str, dict]], dict[str, tuple[str, dict]]]:
+    def _blueprint_nodes(self, project: str | None) -> tuple[list[tuple[str, dict]], dict[tuple[str, str], tuple[str, dict]]]:
         """All blueprint nodes as ``(project, node)`` plus a ``lean-name -> (project,
         node)`` map, so a Lean hit can carry its informal LaTeX statement. Falls
         back to parsing the blueprint sources when the published cache is empty,
@@ -1711,7 +1742,7 @@ class WorkspaceService:
         if not any(d.get("nodes") for d in dags.values()):
             dags = workspace_dags(self.workspace)
         nodes: list[tuple[str, dict]] = []
-        by_lean: dict[str, tuple[str, dict]] = {}
+        by_lean: dict[tuple[str, str], tuple[str, dict]] = {}
         for proj, dag in dags.items():
             if project and proj != project:
                 continue
@@ -1719,7 +1750,7 @@ class WorkspaceService:
                 nodes.append((proj, node))
                 lean = node.get("lean_name")
                 if lean:
-                    by_lean[lean] = (proj, node)
+                    by_lean[proj, lean] = (proj, node)
         return nodes, by_lean
 
     @staticmethod
@@ -1736,7 +1767,7 @@ class WorkspaceService:
             "leanok": bool(node.get("proved")),
         }
 
-    def _lean_row(self, decl: Any, score: float, by_lean: dict[str, tuple[str, dict]]) -> dict[str, Any]:
+    def _lean_row(self, decl: Any, score: float, by_lean: dict[tuple[str, str], tuple[str, dict]]) -> dict[str, Any]:
         return {
             "name": decl.name,
             "kind": decl.kind,
@@ -1746,7 +1777,7 @@ class WorkspaceService:
             "file": decl.file,
             "line": decl.line,
             "score": round(float(score), 4),
-            "blueprint": self._blueprint_payload(by_lean.get(decl.name)),
+            "blueprint": self._blueprint_payload(by_lean.get((decl.library, decl.name))),
         }
 
     def search(
@@ -1778,7 +1809,8 @@ class WorkspaceService:
         nodes, by_lean = self._blueprint_nodes(None)
 
         def _passes(row: dict[str, Any]) -> bool:
-            if lib_set is not None and row.get("library") not in lib_set:
+            library = row.get("library") or ""
+            if lib_set is not None and library not in lib_set and library.partition("@")[0] not in lib_set:
                 return False
             if kind_set is not None and row.get("kind") not in kind_set:
                 return False
@@ -1811,13 +1843,13 @@ class WorkspaceService:
                 if bp:
                     text = f"{text} {bp.get('title') or ''} {bp.get('statement') or ''}"
                 row["coverage"] = _coverage(text)
-                rows[("lean", hit.declaration.name)] = row
+                rows[("lean", hit.declaration.library, hit.declaration.name)] = row
             if nodes:
                 docs = [f"{n.get('title') or ''} {n.get('statement') or ''}" for _, n in nodes]
                 for i, score in _BM25(docs).search(query).items():
                     proj, node = nodes[i]
                     lean = node.get("lean_name")
-                    lean_key = ("lean", lean)
+                    lean_key = ("lean", proj, lean)
                     cov = _coverage(docs[i])
                     if lean and lean_key in rows:
                         rows[lean_key]["score"] = round(max(rows[lean_key]["score"], float(score)), 4)
@@ -1918,7 +1950,8 @@ class WorkspaceService:
                             if f.get("category") in ("lean", "blueprint"):
                                 eps.append(
                                     f"/api/session/file-diff?run={run_id}&session={session.name}"
-                                    f"&path={f['path']}&sha={c['sha']}"
+                                    f"&path={quote(f['path'], safe='/')}&sha={c['sha']}"
+                                    + (f"&project={quote(c['project'], safe='')}" if c.get("project") else "")
                                 )
                 except Exception:
                     pass
@@ -2042,6 +2075,7 @@ class WorkspaceService:
                 (query.get("session") or [""])[0],
                 (query.get("path") or [""])[0],
                 sha=(query.get("sha") or [""])[0],
+                project=(query.get("project") or [""])[0],
             )
         if parsed.path == "/api/projects":
             return self.projects_index()
