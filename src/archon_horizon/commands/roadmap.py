@@ -277,6 +277,8 @@ def set_item(
     owner: str | None = typer.Option(None, "--owner", help="Team/agent responsible; pass '' to clear."),
     milestone: str | None = typer.Option(None, "--milestone", help="Milestone label for grouping/filtering; pass '' to clear."),
     project: list[str] | None = typer.Option(None, "--project", help="Replace the item's projects (repeatable; omit to leave unchanged)."),
+    files: list[str] | None = typer.Option(None, "--file", help="Replace writable member files (repeatable)."),
+    nodes: list[str] | None = typer.Option(None, "--blueprint-node", help="Replace blueprint labels (repeatable)."),
     depends_on: list[str] | None = typer.Option(None, "--depends-on", help="Replace depends_on ids (repeatable; pass '' alone to clear)."),
     inbox_ref: list[str] | None = typer.Option(None, "--inbox-ref", help="Replace inbox_refs (repeatable; pass '' alone to clear)."),
     task_ref: list[str] | None = typer.Option(None, "--task-ref", help="Replace task_refs (repeatable; pass '' alone to clear)."),
@@ -293,6 +295,7 @@ def set_item(
     YAML. Empty-string values clear optional fields (parent, owner, milestone,
     depends-on, refs)."""
     store = _store(ctx)
+    ctx.with_resource(store.edit_lock())
     items = list(store.load().items)
     idx = next((n for n, it in enumerate(items) if it.id == item_id), None)
     if idx is None:
@@ -323,6 +326,13 @@ def set_item(
             raise typer.Exit(1)
         changes["projects"] = tuple(projects)
         changes["scope"] = dataclasses.replace(item.scope, projects=tuple(projects))
+    scope_changes = {}
+    for key, values in (("files", files), ("blueprint_nodes", nodes)):
+        normalized = _normalize_id_list(values)
+        if normalized is not None:
+            scope_changes[key] = tuple(normalized)
+    if scope_changes:
+        changes["scope"] = dataclasses.replace(changes.get("scope", item.scope), **scope_changes)
     depends = _normalize_id_list(depends_on)
     if depends is not None:
         unknown = [dep for dep in depends if dep != item_id and not any(it.id == dep for it in items)]
@@ -342,7 +352,7 @@ def set_item(
     if parent is not None or depth is not None:
         store.append_history(item_id, _history_entry(actor, "nested",
                              note=(f"parent={parent.strip() or 'none'}" if parent is not None else f"depth={depth}")))
-    board_fields = []
+    board_fields = list(scope_changes)
     if owner is not None:
         board_fields.append("owner")
     if milestone is not None:
@@ -400,6 +410,8 @@ def add_item(
     depth: int | None = typer.Option(None, "--depth", help="Indentation level when there is no --parent (0 = top level)."),
     owner: str | None = typer.Option(None, "--owner", help="Team/agent responsible."),
     milestone: str | None = typer.Option(None, "--milestone", help="Milestone label for grouping/filtering."),
+    files: list[str] = typer.Option((), "--file", help="Writable member file (repeatable)."),
+    nodes: list[str] = typer.Option((), "--blueprint-node", help="Assigned blueprint label (repeatable)."),
     depends_on: list[str] = typer.Option((), "--depends-on", help="Prerequisite roadmap item id(s) (repeatable)."),
     inbox_ref: list[str] = typer.Option((), "--inbox-ref", help="Linked inbox item id(s) (repeatable)."),
     task_ref: list[str] = typer.Option((), "--task-ref", help="Linked task id(s) (repeatable)."),
@@ -415,6 +427,7 @@ def add_item(
         else:
             raise typer.BadParameter("pass --project (no session project to default from)")
     store = _store(ctx)
+    ctx.with_resource(store.edit_lock())
     items = list(store.load().items)
     if any(it.id == item_id for it in items):
         log.error(f"Roadmap item {item_id!r} already exists; use `roadmap set`.")
@@ -438,7 +451,7 @@ def add_item(
         depends_on=tuple(deps),
         inbox_refs=tuple(_normalize_id_list(list(inbox_ref)) or ()),
         task_refs=tuple(_normalize_id_list(list(task_ref)) or ()),
-        scope=ItemScope(projects=tuple(projects)),
+        scope=ItemScope(projects=tuple(projects), files=files, blueprint_nodes=nodes),
         metadata=_apply_board_meta(
             _hierarchy_meta(
                 with_provenance({"author": actor, "created_at": utc_now().isoformat()}), depth, parent
@@ -470,6 +483,7 @@ def rename_item(
         log.error("New id must be non-empty.")
         raise typer.Exit(1)
     store = _store(ctx)
+    ctx.with_resource(store.edit_lock())
     items = list(store.load().items)
     idx = next((n for n, it in enumerate(items) if it.id == item_id), None)
     if idx is None:
@@ -542,6 +556,7 @@ def remove_item(
     cleared) rather than deleted, and ``depends_on`` entries pointing at it are
     dropped. Pass ``--cascade`` to delete direct children as well."""
     store = _store(ctx)
+    ctx.with_resource(store.edit_lock())
     loaded = list(store.load().items)
     if not any(it.id == item_id for it in loaded):
         log.error(f"No roadmap item {item_id!r}.")

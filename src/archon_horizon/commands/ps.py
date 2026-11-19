@@ -16,14 +16,15 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import socket
 import time
 from pathlib import Path
 
+import psutil
 import typer
 
 from archon_horizon.log import log
+from archon_horizon.core.atomic import write_text_atomic
 
 from .shared import emit_json
 
@@ -33,12 +34,12 @@ _STALE_S = 30 * 60.0  # no run-dir writes for this long ⇒ flag as inactive
 def write_process_marker(run_dir: Path, **context: object) -> None:
     """Register a live run process, including optional team identity metadata."""
     try:
-        (run_dir / "process.json").write_text(json.dumps({
+        write_text_atomic(run_dir / "process.json", json.dumps({
             "pid": os.getpid(),
             "host": socket.gethostname(),
             "started_at": time.time(),
             **{key: value for key, value in context.items() if value not in (None, "", [], ())},
-        }), "utf-8")
+        }))
     except OSError:
         pass
 
@@ -288,6 +289,28 @@ def _rows(runs_dir: Path, *, include_zombies: bool = False) -> list[dict]:
     return rows
 
 
+def terminate_local_runs(pids, *, timeout: float) -> None:
+    """Capture each engine's descendants before its run process can disappear."""
+    processes = []
+    for pid in pids:
+        try:
+            parent = psutil.Process(pid)
+            processes.extend([*parent.children(recursive=True), parent])
+        except psutil.NoSuchProcess:
+            continue
+    for process in processes:
+        try:
+            process.terminate()
+        except psutil.NoSuchProcess:
+            continue
+    _, alive = psutil.wait_procs(processes, timeout=timeout)
+    for process in alive:
+        try:
+            process.kill()
+        except psutil.NoSuchProcess:
+            continue
+
+
 def ps(
     ctx: typer.Context,
     kill: str | None = typer.Option(None, "--kill", help="Terminate this run id's process (SIGTERM, then SIGKILL after 10s). Local host only."),
@@ -317,12 +340,7 @@ def ps(
             log.error(f"Run {row['run']} is owned by {row['host']}; kill it there.")
             raise typer.Exit(1)
         if row["alive"]:
-            os.kill(row["pid"], signal.SIGTERM)
-            deadline = time.monotonic() + 10.0
-            while time.monotonic() < deadline and _pid_alive(row["pid"]):
-                time.sleep(0.2)
-            if _pid_alive(row["pid"]):
-                os.kill(row["pid"], signal.SIGKILL)
+            terminate_local_runs([row["pid"]], timeout=10)
             log.success(f"Terminated run {row['run']} (pid {row['pid']}). Resume with `horizon run --resume {row['run']}`.")
         _finalize_orphaned_sessions(row["marker"].parent)
         row["marker"].unlink(missing_ok=True)

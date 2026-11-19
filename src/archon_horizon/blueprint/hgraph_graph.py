@@ -87,7 +87,8 @@ def _attachment_count(graph, node_id: str, prefix: str) -> int:
 
 
 def build_project_graph(
-    project_root: Path, blueprint_dir: Path | None = None, *, sync: bool = True
+    project_root: Path, blueprint_dir: Path | None = None, *, sync: bool = True,
+    graph_root: Path | None = None,
 ) -> dict[str, Any] | None:
     """Build the hgraph-backed graph for one project, or None when it has none.
 
@@ -114,7 +115,7 @@ def build_project_graph(
     lean_paths = cfg.get("lean") or [str(project_root)]
 
     warnings: list[str] = []
-    graph = Graph.open(project_root)
+    graph = Graph.open(graph_root or project_root)
     if sync:
         outcome = hgraph_sync(graph, blueprint=str(entry), lean_paths=lean_paths, root=project_root)
         warnings = list(outcome.get("warnings") or ())
@@ -125,7 +126,7 @@ def build_project_graph(
     # a labelled remark or example appears as an unproved TODO in the dashboard.
     tex_nodes = [
         n for n in graph.nodes(type="tex")
-        if n.meta.get("label") and is_countable({"type": n.meta.get("content_type")})
+        if n.meta.get("label") and not n.meta.get("stale") and is_countable({"type": n.meta.get("content_type")})
     ]
 
     # Unlabelled tex nodes (source quotes, standalone proof bodies) and
@@ -204,6 +205,7 @@ def build_project_graph(
             "has_sorry": status == "sorry" or any(
                 l.meta.get("lean_status") == "sorry" for l in leans
             ),
+            "lean_files": sorted({l.meta["file"] for l in leans if l.meta.get("file")}),
             "lean_file": next((l.meta.get("file") for l in leans if l.meta.get("file")), None),
             "dep_count": len(analysis.deps.get(node.id, ())),
             "rdep_count": len(analysis.rdeps.get(node.id, ())),
@@ -250,7 +252,7 @@ def build_project_graph(
     # the shape the parser DAG uses ({"node", "uses"}) where parseable.
     dangling = []
     for warning in warnings:
-        head, _, rest = warning.partition(":")
+        head, _, rest = warning.partition(": ")
         if "\\uses{" in rest:
             used = rest.split("\\uses{", 1)[1].split("}", 1)[0]
             dangling.append({"node": head.strip(), "uses": used})

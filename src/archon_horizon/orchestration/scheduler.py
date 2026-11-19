@@ -13,11 +13,11 @@ _PRIORITY_ORDER = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
 
 
 def write_sets_conflict(a: WriteSet, b: WriteSet) -> bool:
-    """True if two write sets cannot safely run at the same time. Kept so the
-    scheduler can keep a parallel selection non-overlapping; with the default
-    ``max_parallel=1`` (the sequential supervisor) it never fires."""
+    """True when simultaneous writes could overlap."""
     if a.workspace or b.workspace:
         return True
+    if a.projects and b.projects and not set(a.projects).intersection(b.projects):
+        return bool(set(a.files) & set(b.files))
     if set(a.declarations) & set(b.declarations):
         return True
     if set(a.blueprint_nodes) & set(b.blueprint_nodes):
@@ -32,9 +32,9 @@ def write_sets_conflict(a: WriteSet, b: WriteSet) -> bool:
     return bool(set(a.files) & set(b.files))
 
 
-def _priority_key(task: HorizonTask) -> tuple[int, str]:
-    raw = task.metadata.get("roadmap_priority", task.metadata.get("priority", "normal"))
-    return (_PRIORITY_ORDER.get(str(raw).lower(), _PRIORITY_ORDER["normal"]), task.id)
+def priority_rank(task: HorizonTask) -> int:
+    raw = task.metadata.get("roadmap_priority", task.metadata.get("priority", task.priority))
+    return _PRIORITY_ORDER.get(str(raw).lower(), _PRIORITY_ORDER["normal"])
 
 
 class Scheduler(ABC):
@@ -80,7 +80,7 @@ class FreezeAwareScheduler(Scheduler):
         candidates: list[HorizonTask],
     ) -> list[HorizonTask]:
         selected: list[HorizonTask] = []
-        for task in sorted(candidates, key=_priority_key):
+        for task in sorted(candidates, key=lambda t: (priority_rank(t), t.id)):
             if task.status is not TaskStatus.QUEUED:
                 continue
             if not self._in_focus(task, focus):

@@ -17,14 +17,19 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from archon_horizon.config.schema import BudgetConfig
 
 from archon_horizon.agents.base import HorizonAgent, HorizonContext
 from archon_horizon.blueprint.workspace import workspace_dags
-from archon_horizon.config.schema import BudgetConfig
+from archon_horizon.core.atomic import write_text_atomic
 from archon_horizon.core.clock import utc_now
+from archon_horizon.core.locks import task_lease
 from archon_horizon.core.events import Event
 from archon_horizon.core.freeze import FreezeSet, freeze_violation_details, frozen_violations
-from archon_horizon.core.roadmap import Roadmap, RoadmapStatus
+from archon_horizon.core.roadmap import Roadmap, RoadmapItem, RoadmapStatus
 from archon_horizon.core.scope import ItemScope
 from archon_horizon.core.sessions import RunRecord, SyncBoundary
 from archon_horizon.core.status_sync import has_recorded_terminal_status, terminal_status_actor
@@ -629,16 +634,19 @@ class Orchestrator:
             if frozen_violations(task.write_set, self.freeze):
                 continue
             if task.status is TaskStatus.RUNNING and initial:
-                self.task_store.append_history(task_id, {
-                    "at": utc_now().isoformat(),
-                    "actor": "system",
-                    "field": "status",
-                    "from": task.status.value,
-                    "to": TaskStatus.QUEUED.value,
-                    "note": "queued so the explicitly started task can be dispatched by this run",
-                })
-                self.task_store.put(dataclasses.replace(task, status=TaskStatus.QUEUED, updated_at=utc_now()))
-            elif task.status is not TaskStatus.RUNNING and task.status is not TaskStatus.QUEUED:
+                with task_lease(self.workspace, task) as acquired:
+                    if not acquired:
+                        continue
+                    self.task_store.append_history(task_id, {
+                        "at": utc_now().isoformat(),
+                        "actor": "system",
+                        "field": "status",
+                        "from": task.status.value,
+                        "to": TaskStatus.QUEUED.value,
+                        "note": "queued so the explicitly started task can be dispatched by this run",
+                    })
+                    self.task_store.put(dataclasses.replace(task, status=TaskStatus.QUEUED, updated_at=utc_now()))
+            elif task.status not in (TaskStatus.RUNNING, TaskStatus.QUEUED):
                 # A DONE the agent declared is authoritative and terminal: never
                 # reopen it here. Re-running a finished task is a deliberate human
                 # act (`horizon task set <id> --status queued`), guarded at the CLI.
@@ -741,8 +749,18 @@ class Orchestrator:
             self._emit(
                 "roadmap.deps_unmet", actor="orchestrator", roadmap_id=item.id, dependencies=unmet
             )
+        task = self.roadmap_task(item)
+        existing = {t.id: t for t in self.task_store.list()}
+        if item.id in existing:
+            task = dataclasses.replace(task, created_at=existing[item.id].created_at)
+        else:
+            self._emit("task.created", actor="orchestrator", task_id=item.id, project=item.projects[0])
+        return self.task_store.put(task)
+
+    @staticmethod
+    def roadmap_task(item: RoadmapItem) -> HorizonTask:
         objective = item.title if not item.summary else f"{item.title}\n\n{item.summary}"
-        task = HorizonTask(
+        return HorizonTask(
             id=item.id,
             project=item.projects[0],
             objective=objective,
@@ -751,7 +769,7 @@ class Orchestrator:
             projects=item.projects,
             priority=item.priority,
             status=TaskStatus.QUEUED,
-            write_set=self._roadmap_item_write_set(item),
+            write_set=Orchestrator._roadmap_item_write_set(item),
             scope=item.scope,
             roadmap_refs=(item.id,),
             inbox_refs=item.inbox_refs,
@@ -762,12 +780,6 @@ class Orchestrator:
             # the task's own working hints.
             metadata={"roadmap_priority": item.priority, "from_roadmap": True},
         )
-        existing = {t.id: t for t in self.task_store.list()}
-        if item.id in existing:
-            task = dataclasses.replace(task, created_at=existing[item.id].created_at)
-        else:
-            self._emit("task.created", actor="orchestrator", task_id=item.id, project=item.projects[0])
-        return self.task_store.put(task)
 
     @staticmethod
     def _roadmap_item_write_set(item: object) -> WriteSet:
@@ -1220,8 +1232,8 @@ class Orchestrator:
         ``rounds_override`` (from ``--rounds``) when given, else the run's
         configured round count; see ``_run_locked``.
 
-        Runs are sequential — one session at a time on the single workspace
-        ledger — so there is nothing to lock against.
+        Each worker runs its own rounds sequentially and holds a write lease
+        for its active task while other workers operate on independent scopes.
         """
         return self._run_locked(
             run, dry_run=dry_run, resume=resume, rounds_override=rounds_override,
@@ -1320,7 +1332,7 @@ class Orchestrator:
             if resume and i < resume_round:
                 continue  # this round finished before the interruption
 
-            if not dry_run:
+            if not dry_run and not run.metadata.get("supervised"):
                 self._queue_focus_for_round(run, initial=(not resume and i == 0))
             # The hgraph skill reads a fresh DAG during horizon; only
             # the run's own projects need refreshing here.
@@ -1381,19 +1393,24 @@ class Orchestrator:
             fatal_reason: str | None = None
             retry_after: object = None
             for n, task in enumerate(selected):
-                result = self._horizon_step(
-                    run, task, runlog, round_index=base + i,
-                    # Rounds run as ``base + i`` for ``i`` in ``range(total_rounds)``,
-                    # so the agent's last round is ``base + total_rounds - 1``. A
-                    # resume extends ``total_rounds`` past ``rounds_requested``
-                    # (it drives a fresh batch on top of what already ran), so this
-                    # must track ``total_rounds`` — deriving it from
-                    # ``rounds_requested`` would leave the agent's
-                    # ``ROUND + 1 == ROUNDS`` last-round check never true on a
-                    # resumed run, and it would never hand off cleanly.
-                    rounds_total=base + total_rounds,
-                    resume_session_id=h_resume if n == 0 else None,
-                )
+                with task_lease(self.workspace, task) as acquired:
+                    if not acquired:
+                        self._emit("task.deferred", task_id=task.id, reason="write scope in use")
+                        blocked.append(task.id)
+                        continue
+                    result = self._horizon_step(
+                        run, task, runlog, round_index=base + i,
+                        # Rounds run as ``base + i`` for ``i`` in ``range(total_rounds)``,
+                        # so the agent's last round is ``base + total_rounds - 1``. A
+                        # resume extends ``total_rounds`` past ``rounds_requested``
+                        # (it drives a fresh batch on top of what already ran), so this
+                        # must track ``total_rounds`` — deriving it from
+                        # ``rounds_requested`` would leave the agent's
+                        # ``ROUND + 1 == ROUNDS`` last-round check never true on a
+                        # resumed run, and it would never hand off cleanly.
+                        rounds_total=base + total_rounds,
+                        resume_session_id=h_resume if n == 0 else None,
+                    )
                 if result is None:
                     blocked.append(task.id)
                     continue
@@ -1407,10 +1424,7 @@ class Orchestrator:
                     fatal_reason = str(result.metadata.get("failure_reason") or "task-failed")
                     retry_after = result.metadata.get("retry_after_s")
                     break
-                if self.budget is not None and (
-                    (self.budget.run_tokens_out is not None and run_tokens_out > self.budget.run_tokens_out)
-                    or (self.budget.run_cost_usd is not None and run_cost_usd > self.budget.run_cost_usd)
-                ):
+                if self.budget and self.budget.run_cost_usd is not None and run_cost_usd > self.budget.run_cost_usd:
                     fatal_reason = "budget"
                     self._emit(
                         "run.budget_exhausted",
@@ -1566,7 +1580,7 @@ class Orchestrator:
         counts: dict[str, dict[str, int]] = {}
         for project, dag in dags.items():
             path = out_dir / f"{project}.json"
-            path.write_text(json.dumps(dag, indent=2, sort_keys=True), "utf-8")
+            write_text_atomic(path, json.dumps(dag, indent=2, sort_keys=True))
             refs.append(path.relative_to(self.workspace.root).as_posix())
             counts[project] = {
                 "nodes": len(dag.get("nodes", ())),

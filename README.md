@@ -75,6 +75,8 @@ If you prefer to install from source:
 ```bash
 git clone https://github.com/frenzymath/Archon-Horizon.git
 cd Archon-Horizon
+npm --prefix src/archon_horizon/frontend ci
+npm --prefix src/archon_horizon/frontend run build
 python -m pip install .
 horizon setup        # Check external tools (Claude Code, Lean 4 toolchain, …)
 ```
@@ -105,9 +107,14 @@ items they delivered.
 
 ### 3. Run
 
+Register your member with `horizon project add my_project projects/my_project` if you did not add it during initialization. Put the source paper in that member.
+
 ```bash
-horizon run my_task           # a single task or project
-horizon run '*'               # every member project
+horizon task add --id paper --project my_project --objective "Formalize the paper in references/"
+horizon run --dry-run         # preview assignments and current resource headroom
+horizon run                   # supervise the workspace and start independent runs
+horizon run --supervisor my_project  # restrict scheduling to a member
+horizon run my_task           # drive one specific task directly
 horizon dashboard             # live progress at http://127.0.0.1:8765
 ```
 
@@ -121,6 +128,7 @@ horizon dashboard             # live progress at http://127.0.0.1:8765
 Every command supports `--json` for machine-readable output on `stdout`. Run `horizon -h` for all commands, and `horizon <command> -h` for command-specific flags.
 
 - `horizon init` — scaffold a workspace or refresh managed files (`--update`).
+- `horizon run` — dynamically assign ready roadmap milestones and blueprint proofs to independent runs, with live CPU and memory monitoring.
 - `horizon run <target>` — run autoformalization on a task or project, everything (`*`), or a single role (`ground` / `horizon`, optionally `--backend interactive`).
 - `horizon discuss` — open an interactive session to talk with the workspace: status, recent runs, and edits to projects/tasks/inbox/roadmap on request.
 - `horizon attempt save` — preserve a rejected draft and optional diagnostics as a session artifact.

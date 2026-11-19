@@ -8,6 +8,7 @@ or a clean rewrite rather than local patching.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -120,14 +121,11 @@ def iter_lean_files(root: Path) -> Iterable[Path]:
     """Yield authored ``.lean`` files under ``root``, skipping build trees."""
     if not root.is_dir():
         return
-    for path in root.rglob("*.lean"):
-        try:
-            rel_parts = path.relative_to(root).parts
-        except ValueError:
-            continue
-        if any(part in _SKIP_DIRS for part in rel_parts):
-            continue
-        yield path
+    for directory, subdirs, files in os.walk(root):
+        subdirs[:] = [name for name in subdirs if name not in _SKIP_DIRS]
+        for name in files:
+            if name.endswith(".lean"):
+                yield Path(directory) / name
 
 
 def benchmark_project(

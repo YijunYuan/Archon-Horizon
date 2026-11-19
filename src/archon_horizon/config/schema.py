@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from math import isfinite
 from typing import Any
 
 from archon_horizon.core.types import Metadata
@@ -79,45 +80,52 @@ class HarnessConfig:
 
 @dataclass(frozen=True, slots=True)
 class SchedulerConfig:
-    max_parallel_sessions: int = 1
+    max_parallel_sessions: int | None = None
+    min_available_memory_gib: float | None = None
+    max_cpu_percent: float = 90.0
+    poll_seconds: float = 5.0
 
     @classmethod
     def from_raw(cls, data: dict[str, Any]) -> "SchedulerConfig":
-        return cls(
-            max_parallel_sessions=int(data.get("max_parallel_sessions", 1)),
-        )
+        try:
+            max_sessions = data.get("max_parallel_sessions")
+            reserve = data.get("min_available_memory_gib")
+            settings = cls(
+                max_parallel_sessions=int(max_sessions) if max_sessions is not None else None,
+                min_available_memory_gib=float(reserve) if reserve is not None else None,
+                max_cpu_percent=float(data.get("max_cpu_percent", 90)),
+                poll_seconds=float(data.get("poll_seconds", 5)),
+            )
+        except (ValueError, TypeError) as exc:
+            raise ConfigError(f"Invalid workspace.scheduler setting: {exc}") from exc
+        if settings.max_parallel_sessions is not None and settings.max_parallel_sessions < 1:
+            raise ConfigError("scheduler.max_parallel_sessions must be at least 1")
+        if not 0 < settings.max_cpu_percent <= 100:
+            raise ConfigError("scheduler.max_cpu_percent must be in (0, 100]")
+        reserve = settings.min_available_memory_gib
+        if reserve is not None and (not isfinite(reserve) or reserve < 0):
+            raise ConfigError("scheduler.min_available_memory_gib must be finite and non-negative")
+        if not isfinite(settings.poll_seconds) or settings.poll_seconds < 0.1:
+            raise ConfigError("scheduler.poll_seconds must be finite and at least 0.1")
+        return settings
 
 
 @dataclass(frozen=True, slots=True)
 class BudgetConfig:
-    """Optional spend ceilings for automated runs (``workspace.budget``).
-
-    All limits are opt-in (unset = unlimited). A crossed limit stops the run
-    cleanly — like a usage limit, state stays on disk and ``--resume`` picks it
-    back up. ``session_tokens_out`` additionally cancels a live session that
-    crosses it (checked from the session's live ``usage.json``).
-    """
-
+    """Optional per-session output guard and per-run monetary ceiling."""
     session_tokens_out: int | None = None
-    run_tokens_out: int | None = None
     run_cost_usd: float | None = None
 
     @classmethod
     def from_raw(cls, data: dict[str, Any]) -> "BudgetConfig":
-        def _int(key: str) -> int | None:
-            value = data.get(key)
-            return int(value) if value is not None else None
-
         cost = data.get("run_cost_usd")
-        return cls(
-            session_tokens_out=_int("session_tokens_out"),
-            run_tokens_out=_int("run_tokens_out"),
-            run_cost_usd=float(cost) if cost is not None else None,
-        )
+        session = data.get("session_tokens_out")
+        return cls(session_tokens_out=int(session) if session is not None else None,
+                   run_cost_usd=float(cost) if cost is not None else None)
 
     @property
     def configured(self) -> bool:
-        return any(v is not None for v in (self.session_tokens_out, self.run_tokens_out, self.run_cost_usd))
+        return self.run_cost_usd is not None or self.session_tokens_out is not None
 
 
 @dataclass(frozen=True, slots=True)

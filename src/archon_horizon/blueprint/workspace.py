@@ -15,10 +15,13 @@ auto-discovery of undeclared directories — the manifest is the source of truth
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
 from archon_horizon.core.workspace import Workspace
+from archon_horizon.core.locks import workspace_lock
 from archon_horizon.log import log
 
 from .checks import is_countable
@@ -83,7 +86,7 @@ def _find_blueprint_dir(
     return None
 
 
-def project_dag(workspace: Workspace, name: str, *, sync: bool = True) -> dict | None:
+def project_dag(workspace: Workspace, name: str, *, sync: bool = True, preview: bool = False) -> dict | None:
     """The DAG for one project, or None when it has no usable blueprint.
 
     ``sync=True`` reconciles the blueprint + Lean sources into ``<project>/hgraph/``
@@ -94,7 +97,15 @@ def project_dag(workspace: Workspace, name: str, *, sync: bool = True) -> dict |
     proj = workspace.project(name)
     project_root = workspace.root / proj.path
     bp_dir = _find_blueprint_dir(project_root, proj.blueprint_path, workspace.root)
-    return build_hgraph_graph(project_root, bp_dir, sync=sync)
+    with workspace_lock(workspace.state_path, f"hgraph:{project_root.resolve()}", shared=preview or not sync):
+        if preview:
+            # Reconcile current sources and authored edges in a disposable graph.
+            with tempfile.TemporaryDirectory() as scratch:
+                graph = project_root / "hgraph"
+                if graph.is_dir():
+                    shutil.copytree(graph, Path(scratch) / "hgraph")
+                return build_hgraph_graph(project_root, bp_dir, graph_root=Path(scratch))
+        return build_hgraph_graph(project_root, bp_dir, sync=sync)
 
 
 def workspace_dags(

@@ -40,6 +40,16 @@ horizon run project_a project_b
 horizon run '*'
 ```
 
+### Adaptive supervision
+
+Start `horizon run` for the whole workspace, or `horizon run --supervisor project_a` for one member. Give it a project goal with `horizon task add`. A first worker can prepare a missing blueprint and file-scoped assignments. The supervisor reads the current task queue, roadmap prerequisites, and the blueprint dependency graph. It prioritizes ready proofs that unlock downstream work and refreshes its plan when a worker finishes. A linked, sorry-free result awaiting blueprint confirmation gets a correspondence check.
+
+Use repeatable `--file` and `--blueprint-node` options on `horizon roadmap add` or `set` to record a milestone’s write scope. The assigned run records its source, file and node scope, and the CPU and memory sample used for admission.
+
+Each assignment has its own numbered run, agent process, transcript and project commits. Disjoint files can be worked on together. A task without precise files claims its project. `horizon ps` lists the workers, and the Dashboard overview shows assignments, CPU utilization, available memory and the last sample time.
+
+The supervisor samples the host and visible Linux cgroup v2 limits. Its admission estimate starts at two cores and up to two GiB per new worker, with a smaller memory allowance on small hosts. It ramps up while work is ready and waits to launch more workers under pressure. Active workers can finish and commit. The supervisor follows newly unlocked assignments until it runs out of ready work. `--rounds` bounds attempts per task during this invocation. Individual runs can be resumed by ID. A service or authentication limit stops further dispatch.
+
 ### Dry Runs and Resumption
 - **Dry Run**: Preview the execution plan, target write sets, and harness configuration without launching models:
   ```bash
@@ -59,7 +69,7 @@ horizon run horizon --backend interactive
 
 For a conversational, human-facing session — explain status, summarize recent runs, and make guided edits to projects/tasks/inbox/roadmap on request — use [`horizon discuss`](../../src/archon_horizon/commands/discuss.py).
 
-Run lifecycle and resumption state are tracked in [`core/sessions.py`](../../src/archon_horizon/core/sessions.py); concurrency safety across projects is handled by [`orchestration/locks.py`](../../src/archon_horizon/orchestration/locks.py).
+Run lifecycle and resumption state are tracked in [`core/sessions.py`](../../src/archon_horizon/core/sessions.py); concurrency safety across projects is handled by [`core/locks.py`](../../src/archon_horizon/core/locks.py).
 
 ---
 
@@ -93,7 +103,7 @@ the lead agent may add a fresh-context helper when the scope benefits from one
 Horizon keeps a sharp distinction between the human's tasks and the agent-maintained roadmap:
 
 - **Tasks (`horizon task`)**: the human's lever for launching sessions — objectives with project scope, write-set, and target files. Open to agents and humans alike: both may `add`, `set` (including status and roadmap/inbox refs), `comment`, and `remove`. The machine (scheduler/orchestrator) only ever writes `queued`/`running`; every terminal status (`done`/`blocked`/`failed`) is the agent's own word, and an agent declares `done` only when the work is *fully* complete. Modeled in [`core/tasks.py`](../../src/archon_horizon/core/tasks.py), commands in [`commands/task.py`](../../src/archon_horizon/commands/task.py).
-- **Roadmap (`horizon roadmap`)**: the project's **mathematical status** — the main theorems and infrastructure formalized and still to build. Horizon maintains it against the real Lean/blueprint state, and Ground may audit it from fresh context when the lead agent chooses that perspective. It is a map that guides the work, **not** a work queue. Marking an item active does not launch anything and the orchestrator never turns roadmap items into tasks on its own. A human launches a milestone with `horizon run <roadmap-id>`, which **infers** a task from the item's scope on demand. Modeled in [`core/roadmap.py`](../../src/archon_horizon/core/roadmap.py), commands in [`commands/roadmap.py`](../../src/archon_horizon/commands/roadmap.py).
+- **Roadmap (`horizon roadmap`)**: the project's **mathematical status** — the main theorems and infrastructure formalized and still to build. Horizon maintains it against the real Lean/blueprint state, and Ground may audit it from fresh context when the lead agent chooses that perspective. It is a map that guides the work, **not** a work queue. During supervised execution, ready milestones can be materialized as tasks. A human launches a milestone with `horizon run <roadmap-id>`, which **infers** a task from the item's scope on demand. Modeled in [`core/roadmap.py`](../../src/archon_horizon/core/roadmap.py), commands in [`commands/roadmap.py`](../../src/archon_horizon/commands/roadmap.py).
 
 ### The Roadmap as a Project Board
 

@@ -123,12 +123,10 @@ def usage(
     budget = cfg.budget
     budgets = {
         "session_tokens_out": budget.session_tokens_out,
-        "run_tokens_out": budget.run_tokens_out,
         "run_cost_usd": budget.run_cost_usd,
     }
     headroom = {
         "session_tokens_out": _headroom(budget.session_tokens_out, session.get("tokens_out")),
-        "run_tokens_out": _headroom(budget.run_tokens_out, run_totals.get("tokens_out")),
         "run_cost_usd": _headroom(budget.run_cost_usd, run_totals.get("cost_usd")),
     }
     limit_signals = [r for r in failure_reasons if r in ("rate_limit", "usage_limit", "overloaded")]

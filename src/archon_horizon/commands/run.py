@@ -6,7 +6,7 @@ import hashlib
 import dataclasses
 import os
 import threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Iterator
 
@@ -14,6 +14,7 @@ import typer
 
 from archon_horizon.config.harnesses import HarnessRegistry
 from archon_horizon.config.loader import build_orchestrator
+from archon_horizon.core.locks import task_lease
 from archon_horizon.core.sessions import Focus, RunRecord
 from archon_horizon.core.scope import ItemScope
 from archon_horizon.core.tasks import HorizonTask, TaskStatus, WriteSet
@@ -72,6 +73,11 @@ class RunCommand:
         if self.bare:
             self.backend = "interactive"
 
+        if not self.targets and self.resume is None and self.backend != "interactive" and not self.run_id:
+            self.supervisor = True
+        if self.supervisor and (self.backend == "interactive" or self.resume is not None or self.run_id
+                                or self.round_index is not None):
+            raise typer.BadParameter("Supervision launches fresh headless runs. Resume a child with --resume RUN.")
         with self._dashboard_server():
             # `--backend interactive` hands the terminal straight to the engine so a
             # human can drive the agent (type follow-ups). It is a single human-driven
@@ -81,7 +87,7 @@ class RunCommand:
             # target (a task, a project, `.`, or a bare role), if the role that would
             # run declares it, we launch that one role interactively, seeded with the
             # focus, instead of dispatching it headlessly.
-            if self.backend != "interactive":
+            if self.backend != "interactive" and not self.supervisor:
                 role = self._config_interactive_role()
                 if role is not None:
                     self.backend = "interactive"
@@ -91,8 +97,9 @@ class RunCommand:
                 return
 
             cfg, workspace = load_workspace(self.root)
-            self._install_native_subagents(cfg, workspace)
-            self._refresh_mcp_config(cfg, workspace)
+            if not (self.supervisor and self.dry_run):
+                self._install_native_subagents(cfg, workspace)
+                self._refresh_mcp_config(cfg, workspace)
             _, providers = inbox_providers(cfg, workspace)
             orch = build_orchestrator(self.root, registry=HarnessRegistry(), inbox_providers=providers)
 
@@ -103,13 +110,50 @@ class RunCommand:
                 self._exit_if_paused(orch)
                 return
 
-            if not self.targets and not self.supervisor:
-                log.error("Specify what to run: `horizon run .`, `horizon run '*'`, `horizon`, task names, project names, or files (or `--supervisor` for all queued work).")
-                raise typer.Exit(1)
+            if self.supervisor:
+                self._supervise(orch, cfg)
+                return
 
             reports = orch.run(self._build_run(orch, cfg.rounds), dry_run=self.dry_run)
             self._emit_reports(reports)
             self._exit_if_paused(orch)
+
+    def _supervise(self, orch, cfg) -> None:
+        from archon_horizon.orchestration.supervisor import supervise
+
+        projects, ids = set(), set()
+        if not self.targets or self.targets in ((".",), ("*",)):
+            projects.update(orch.workspace.projects)
+        else:
+            known = {t.id for t in orch.task_store.list()} | {r.id for r in orch.roadmap_store.load().items}
+            for target in self.targets:
+                if target in known:
+                    ids.add(target)
+                elif target in orch.workspace.projects:
+                    projects.add(target)
+                else:
+                    raise typer.BadParameter(f"Unknown supervisor target {target!r}; select a project, task or roadmap item.")
+        # Previous init versions wrote a fixed width (usually one) for the
+        # scheduler inside a single run. Independent runs use current headroom.
+        config = dataclasses.replace(cfg.scheduler, max_parallel_sessions=None)
+        create_tasks = True
+        if os.environ.get("ARCHON_HORIZON_RUN"):
+            policy = cfg.delegation
+            if not policy.allow_launch_runs or policy.max_parallel_sessions < 1:
+                raise typer.BadParameter("Workspace delegation does not allow this agent to launch runs.")
+            config = dataclasses.replace(config, max_parallel_sessions=policy.max_parallel_sessions)
+            create_tasks = policy.allow_launch_tasks
+        result = supervise(orch, config, projects, ids, rounds=self.rounds if self.rounds is not None else cfg.rounds,
+                           dry_run=self.dry_run, create_tasks=create_tasks)
+        if self.as_json:
+            emit_json(result)
+        elif self.dry_run:
+            log.results_table([(t["task"], ", ".join(t["projects"]), t["title"]) for t in result["planned"]],
+                              title="Supervisor plan")
+        else:
+            log.info(f"Supervisor finished with {len(result['runs'])} run(s): {result['reason']}.")
+        if result["exit_code"]:
+            raise typer.Exit(result["exit_code"])
 
     @staticmethod
     def _exit_if_paused(orch) -> None:
@@ -132,8 +176,6 @@ class RunCommand:
 
         - ``horizon run horizon [targets…]`` drives ONE session over the focus
           (with ``--run``/``--round`` to append it into an existing run);
-        - ``--supervisor`` drives N rounds over the focus (empty focus = all
-          queued work);
         - plain targets drive N rounds pinned to the resolved focus.
         """
         role_session = bool(self.targets) and self.targets[0] in ROLE_TARGETS
@@ -271,6 +313,10 @@ class RunCommand:
             return None, (), None
 
     def _run_interactive(self) -> None:
+        with ExitStack() as stack:
+            self._interactive_session(stack)
+
+    def _interactive_session(self, stack: ExitStack) -> None:
         """Launch the role's harness as an interactive TTY session, seeded with a
         role prompt the human can then steer.
 
@@ -393,6 +439,11 @@ class RunCommand:
         log.info(f"Launching an interactive {role} session using {launch.description}.")
 
         # A generic engine has no parseable session file, so just hand over the TTY.
+        interactive_task = task or HorizonTask(id=f"interactive-{os.getpid()}", project=cwd_project or "",
+                                              projects=projects, objective="")
+        if not stack.enter_context(task_lease(workspace, interactive_task)):
+            log.warn("Another run holds this write scope.")
+            raise typer.Exit(1)
         if launch.engine == "generic":
             scratch_dir, scratch_env = scratch_environment(
                 workspace,
@@ -784,7 +835,7 @@ def run(
     ctx: typer.Context,
     targets: list[str] = typer.Argument(None, help="Run target: '.', '*', 'horizon', a task id, a roadmap item id, project names, or files (resolved task > roadmap > project)."),
     task: str | None = typer.Option(None, "--task", help="Pin one task name."),
-    rounds: int | None = typer.Option(None, "--rounds", help="Override configured round count."),
+    rounds: int | None = typer.Option(None, "--rounds", help="Rounds per direct run, or maximum attempts per assignment under supervision."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Plan only; do not run Horizon."),
     resume: str | None = typer.Option(
         None, "--resume",
@@ -800,7 +851,7 @@ def run(
     ),
     supervisor: bool = typer.Option(
         False, "--supervisor",
-        help="Lightweight automated loop: run `--rounds` Horizon-only sessions (no Ground role — the Horizon agent spawns a cleanup subagent itself when it wants). Stops cleanly on a usage-limit (state is on disk; just re-run to resume).",
+        help="Schedule independent headless runs from queued tasks, the roadmap, and ready blueprint statements, within live CPU and memory headroom. Default with no targets.",
     ),
     run_id: str | None = typer.Option(
         None, "--run",

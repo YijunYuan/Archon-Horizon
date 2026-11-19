@@ -272,7 +272,7 @@ def build_orchestrator(
         workspace=workspace,
         horizon=horizon,
         scheduler=FreezeAwareScheduler(
-            freeze=freeze, max_parallel=cfg.scheduler.max_parallel_sessions
+            freeze=freeze, max_parallel=cfg.scheduler.max_parallel_sessions or 1
         ),
         sync=MultiProviderSyncCoordinator(inbox_providers),
         event_log=stores.events,

@@ -598,6 +598,7 @@ class WorkspaceService:
         payload = {
             "workspace": self.workspace.name,
             "workspace_root": self.workspace.root.as_posix(),
+            "supervisor": self._supervisor_state(),
             # The workspace's Horizon state/config directory (.archon-horizon),
             # surfaced so the dashboard can show where this workspace's config,
             # runs, and ledger live.
@@ -653,6 +654,18 @@ class WorkspaceService:
             "session_cache_entries": len(self._session_cache),
         }
         return payload
+
+    def _supervisor_state(self) -> dict | None:
+        try:
+            info = json.loads((self.workspace.state_path / "supervisor.json").read_text("utf-8"))
+            if info.get("status") not in ("finished", "paused", "failed", "interrupted"):
+                import socket
+                from archon_horizon.commands.ps import _pid_alive
+                if info.get("host") == socket.gethostname() and not _pid_alive(int(info["pid"])):
+                    info.update(status="interrupted", active=[], admissions=0)
+            return info
+        except (OSError, ValueError):
+            return None
 
     def _discover_projects(self) -> list[str]:
         projs = list(self.workspace.projects.keys())
@@ -2303,6 +2316,10 @@ class WorkspaceService:
         }
 
     def edit_roadmap(self, action: str, **kw: Any) -> dict[str, Any]:
+        with self.stores.roadmap.edit_lock():
+            return self._edit_roadmap_locked(action, **kw)
+
+    def _edit_roadmap_locked(self, action: str, **kw: Any) -> dict[str, Any]:
         roadmap = self.stores.roadmap.load()
         items = list(roadmap.items)
         if action == "add":
@@ -2531,7 +2548,8 @@ class WorkspaceService:
             if old.status != new_status:
                 self._record_history(self.stores.tasks, task_id, actor, "status",
                                      before=old.status.value, after=new_status.value)
-                self._sync_task_roadmap_refs(old, new_status, actor)
+                with self.stores.roadmap.edit_lock():
+                    self._sync_task_roadmap_refs(old, new_status, actor)
             return {"ok": True, "id": task_id}
         if action != "edit":
             raise ValueError(f"unknown task action {action!r}")

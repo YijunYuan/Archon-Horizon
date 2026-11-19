@@ -62,7 +62,7 @@ Upgrade the installed `archon-horizon` package. Follow with `horizon init --upda
 
 ## 3. Execution & orchestration
 
-### `horizon run <target>`
+### `horizon run [target]`
 Drive the Horizon loop; fresh-context helpers are dispatched by the Horizon
 agent at the checkpoints described in the `horizon` skill. ([`commands/run.py`](../../src/archon_horizon/commands/run.py))
 
@@ -73,6 +73,7 @@ run.
 
 | Target | Effect |
 | :--- | :--- |
+| (no target) | Supervise the workspace and assign independent tasks to worker runs. |
 | `<task-id>` | Run that human-created task (re-worked each round for a multi-round run). |
 | `<roadmap-id>` | Infer a task from that roadmap milestone on demand and run it (the roadmap itself never auto-creates tasks). |
 | `<project>` / `<file>` | Synthesize an ad-hoc task scoped to that project/file. |
@@ -84,6 +85,7 @@ run.
 
 | Flag | Description |
 | :--- | :--- |
+| `--supervisor [targets…]` | Dynamically schedule independent runs for the selected projects, tasks or roadmap milestones. |
 | `--task <id>` | Pin one task (alternative to a positional target). |
 | `--rounds <n>` | Override the configured round count. |
 | `--dry-run` | Plan only; print what would run, don't invoke Horizon. |

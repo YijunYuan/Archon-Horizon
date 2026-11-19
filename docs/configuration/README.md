@@ -31,8 +31,6 @@ workspace:
   rounds: 1                       # max Horizon sessions per run
   horizon_agent:
     harness: horizon-default
-  scheduler:
-    max_parallel_sessions: 1      # how many Horizon agents run at once
 
 external_libraries:
   - name: mathlib
@@ -63,8 +61,14 @@ Global defaults for the workspace and the collaboration loop (see [`WorkspaceCon
 | `state_dir` | `.archon-horizon` | Directory holding managed state (roadmap, inboxes, reports, search cache, and disposable workspace-local scratch under `tmp/`). |
 | `rounds` | `1` | Maximum Horizon sessions per run. Long runs may choose the read-only `ground` helper at convergence checkpoints. |
 | `horizon_agent.harness` | — | Named harness (from `harnesses:`) that runs the Horizon agent. |
-| `scheduler.max_parallel_sessions` | `1` | How many Horizon sessions run concurrently. |
-| `scheduler.unknown_write_set_policy` | `lock-project` | What to do when a task's write set is unknown (see [`orchestration/scheduler.py`](../../src/archon_horizon/orchestration/scheduler.py)). |
+| `scheduler.max_parallel_sessions` | unset | Legacy setting for selecting tasks within a direct run. The supervisor sizes parallel runs from live resources, including in workspaces created by the old wizard. |
+| `scheduler.poll_seconds` | `5` | Interval between resource and worker checks. |
+| `scheduler.min_available_memory_gib` | adaptive | Host reserve, by default the smaller of 2 GiB and 20% of effective memory. Each new worker also needs the smaller of 2 GiB and one-third of that memory. |
+| `scheduler.max_cpu_percent` | `90` | CPU utilization at which the supervisor defers new workers. |
+| `budget.session_tokens_out` | unlimited | Optional interruption threshold for one agent session. Its run records the pause and can be resumed. |
+| `budget.run_cost_usd` | unlimited | Optional per-run monetary budget. |
+
+Output tokens are recorded in `horizon usage`. Older `budget.run_tokens_out` entries are ignored.
 
 ### `workspace.delegation`
 

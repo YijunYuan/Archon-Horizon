@@ -26,10 +26,13 @@ the string the Lean node is keyed on, so ``sync`` needs no cross-reference index
 from __future__ import annotations
 
 import re
+import threading
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import yaml
+
+from archon_horizon.lean.benchmark import iter_lean_files
 
 from .graph import Graph, HGraphError, node_id
 
@@ -721,7 +724,7 @@ def _iter_lean_files(paths) -> list[Path]:
     for p in paths:
         p = Path(p)
         if p.is_dir():
-            files += sorted(p.rglob("*.lean"))
+            files += sorted(iter_lean_files(p))
         elif p.exists():
             files.append(p)
     return files
@@ -801,8 +804,8 @@ def sync(g: Graph, *, blueprint: str | None = None, lean_paths=(),
     # so on a large Lean tree it's worth spreading across a process pool;
     # `_upsert` (graph writes) stays sequential below.
     lean_files = _iter_lean_files(lean_paths)
-    if len(lean_files) >= _PARALLEL_THRESHOLD:
-        with ProcessPoolExecutor() as ex:
+    if len(lean_files) >= _PARALLEL_THRESHOLD and threading.current_thread() is threading.main_thread():
+        with ProcessPoolExecutor(max_workers=2) as ex:
             parsed = list(ex.map(_read_and_parse_lean,
                                  ((f, root_abs) for f in lean_files)))
     else:

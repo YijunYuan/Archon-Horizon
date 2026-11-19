@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 from archon_horizon.core.workspace import Workspace
+from archon_horizon.core.locks import workspace_lock
 from archon_horizon.vcs.git import WorkspaceGit, install_ledger_git_wrapper, user_repo_git_dir
 
 
@@ -77,6 +78,25 @@ def finish_project_session(
     return commits
 
 
+def _scoped_commit(args: list[str], project: Path, allowed: set[Path]) -> list[str]:
+    """Keep a supervised commit out of other workers' and the user's staging area."""
+    if "--" in args:
+        paths = args[args.index("--") + 1:]
+        if not paths or any((Path.cwd() / p).resolve() not in allowed for p in paths):
+            sys.exit("A supervised commit must name files in this task's write scope.")
+        return args
+    # Existing skills also use 'add <paths>; commit -m ...'. Select just this
+    # task's staged paths, including deletions and initially untracked files.
+    staged = subprocess.check_output(
+        ["git", "-C", str(project), "diff", "--cached", "--name-only", "--no-renames", "-z"]
+    )
+    paths = [project / os.fsdecode(p) for p in staged.split(b"\0") if p]
+    selected = [os.path.relpath(p, Path.cwd()) for p in paths if p.resolve() in allowed]
+    if not selected:
+        sys.exit("No staged files in this task's write scope.")
+    return [*args, "--", *selected]
+
+
 def main() -> None:
     args = sys.argv[1:]
     # Honor the normal Git convention for selecting a project from the
@@ -112,7 +132,18 @@ def main() -> None:
                 os.environ.setdefault(f"GIT_{role}_NAME", "Archon Horizon")
                 os.environ.setdefault(f"GIT_{role}_EMAIL", "archon-horizon@local")
         args[1:1] = [f"--trailer={key}={value}" for key, value in trailers.items() if value]
-    os.execvp("git", ["git", f"--git-dir={dot}", f"--work-tree={project}", *args])
+    git = ["git", f"--git-dir={dot}", f"--work-tree={project}"]
+    scope = os.environ.get("HORIZON_GIT_WRITE_FILES")
+    if scope and args and args[0] in {"add", "commit", "rm", "mv"}:
+        state = Path(os.environ["HORIZON_GIT_STATE"])
+        with workspace_lock(state, f"git-write:{project}"):
+            allowed = {Path(f) for f in json.loads(scope)}
+            if allowed and args[0] == "commit":
+                args = _scoped_commit(args, project, allowed)
+                if "--only" not in args and "-o" not in args:
+                    args.insert(1, "--only")
+            sys.exit(subprocess.call([*git, *args]))
+    os.execvp("git", [*git, *args])
 
 
 if __name__ == "__main__":

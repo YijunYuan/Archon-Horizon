@@ -32,6 +32,12 @@ def _task_block(context: HorizonContext) -> str:
     title = task.title or task.id
     body = (task.explanation or task.objective or "").strip()
     body_block = f"\n\n{body}" if body else ""
+    if context.run.metadata.get("supervised"):
+        files = ", ".join(task.write_set.files)
+        bounds = f"Edit only these files: {files}." if files else "Keep edits within the assigned project scope."
+        body_block += (f"\n\n{bounds} Other runs may be editing this checkout. "
+                       "Commit only your own files with `git commit --only -- <paths>` via $HORIZON_GIT. "
+                       "Record any work outside your assignment as a follow-up.")
     return (
         f"Task: {task.id}\n"
         f"Title: {title}\n"
@@ -76,12 +82,9 @@ def horizon_task_prompt(context: HorizonContext) -> str:
     ).resolve()
     return (
         f"You are in an **Archon Horizon** workspace at `{context.workspace.root}`.\n\n"
-        "Load the **`horizon`** skill FIRST. Read it at the ABSOLUTE path\n"
-        f"`{skill_path}` (also exported as `$ARCHON_HORIZON_SKILL`) — do NOT use a\n"
-        "relative path like `.claude/skills/horizon/SKILL.md`, which fails when your\n"
-        "shell starts in a member project rather than the workspace root. The skill\n"
-        "explains where the state lives, the tools, and this workspace's conventions\n"
-        "(one-shot discipline, git commits, the final report)."
+        "First load the **`horizon`** skill at its absolute path\n"
+        f"`{skill_path}` (also `$ARCHON_HORIZON_SKILL`). Your shell may start in a member "
+        "project. Follow the skill for workspace tools, commits and the final report."
         f"{_stale_skill_guard(context)}\n\n"
         "Before modifying files, inspect the required and conversational inbox lanes:\n"
         "`\"$HORIZON_BIN\" inbox list --mine --status open --kind protection --json`\n"

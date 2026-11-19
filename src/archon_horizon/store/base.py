@@ -10,6 +10,7 @@ and the memory file.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 
 from archon_horizon.core.events import Event
 from archon_horizon.core.roadmap import Roadmap
@@ -52,6 +53,10 @@ class TaskStore(ABC):
 
 
 class RoadmapStore(ABC):
+    def edit_lock(self):
+        """Serialize a read-modify-save across cooperating writers."""
+        return nullcontext()
+
     @abstractmethod
     def load(self) -> Roadmap: ...
 

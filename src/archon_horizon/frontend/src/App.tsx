@@ -44,6 +44,10 @@ const ROADMAP_KIND_OPTIONS = ['proof', 'blueprint', 'refactor', 'workspace', 're
 type HorizonState = {
   workspace: string;
   workspace_root?: string;
+  supervisor?: {
+    status: string; sampled_at: string; cpu_percent?: number; available_gib?: number;
+    capacity?: number; active: {run: string; task: string; title: string; project: string}[];
+  };
   config_dir?: string;
   projects?: string[];
   roadmap?: { items?: any[] };
@@ -220,6 +224,17 @@ function Overview({ state }: PageProps) {
           <span>{formatDateTime(new Date().toISOString())}</span>
         </div>
       </section>
+
+      {state.supervisor && <Panel title="Supervisor" subtitle={`Sampled ${formatDateTime(state.supervisor.sampled_at)}`}>
+        <p><strong>{state.supervisor.status}</strong>
+          {state.supervisor.cpu_percent != null && ` · CPU ${state.supervisor.cpu_percent.toFixed(0)}%`}
+          {state.supervisor.available_gib != null && ` · ${state.supervisor.available_gib.toFixed(1)} GiB available`}
+          {` · ${state.supervisor.active.length} active runs`}</p>
+        {state.supervisor.active.map(row => <div key={row.run}>
+          <Link to={`/tasks?task=${encodeURIComponent(row.task)}`}>{row.title}</Link>
+          {` · ${row.project} · Run ${row.run}`}
+        </div>)}
+      </Panel>}
 
       <ProjectsPanel projectNames={state.projects ?? []} />
 

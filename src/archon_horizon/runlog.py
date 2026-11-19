@@ -25,6 +25,8 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from archon_horizon.core.atomic import write_text_atomic
 from typing import Any
 
 _LEADING_NUMBER = re.compile(r"(\d+)")
@@ -94,7 +96,7 @@ class SessionLog:
         return self.path / "meta.json"
 
     def write_meta(self, meta: dict[str, Any]) -> None:
-        self.meta_path.write_text(json.dumps(meta, indent=2), "utf-8")
+        write_text_atomic(self.meta_path, json.dumps(meta, indent=2))
 
     def read_meta(self) -> dict[str, Any]:
         if not self.meta_path.exists():

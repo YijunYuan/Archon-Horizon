@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from archon_horizon.core.locks import workspace_lock
 from archon_horizon.core.workspace import Workspace
 from .git import WorkspaceGit, ensure_project_git, git_available, user_repo_git_dir
 
@@ -16,7 +17,8 @@ def project_revisions(
                 continue
             root = workspace.project_path(name)
             if initialize:
-                ensure_project_git(root)
+                with workspace_lock(workspace.state_path, f"git-init:{root.resolve()}"):
+                    ensure_project_git(root)
             native = user_repo_git_dir(root)
             if native:
                 revisions[name] = WorkspaceGit(root, native).current_sha()

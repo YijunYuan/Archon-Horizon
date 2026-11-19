@@ -11,6 +11,7 @@ data, not by subclassing.
 from __future__ import annotations
 
 import dataclasses
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -104,6 +105,12 @@ def _agent_env(role: str, context: HorizonContext) -> dict[str, str]:
     from archon_horizon.vcs.project_git import session_git_environment
 
     env.update(session_git_environment(context.workspace, tuple(projects), context.log_dir))
+    if context.run.metadata.get("supervised"):
+        from archon_horizon.core.locks import task_claim
+        env["HORIZON_GIT_WRITE_FILES"] = json.dumps(task_claim(context.workspace, task).files)
+        env["HORIZON_GIT_STATE"] = str(context.workspace.state_path.resolve())
+    else:
+        env["HORIZON_GIT_WRITE_FILES"] = ""
     return env
 
 

@@ -49,7 +49,7 @@ def test_full_cli_flow(tmp_path: Path) -> None:
     # Engines are not installed; dry-run must still plan without crashing.
     assert _run(ws, "run", "ag-main", "--rounds", "1", "--dry-run") == 0
     assert (ws / ".archon-horizon" / "runs" / "0001" / "run.yaml").exists()
-    assert _run(ws, "run", "--dry-run") == 1
+    assert _run(ws, "run", "--dry-run") == 0
     assert _run(ws, "run", ".", "--rounds", "1", "--dry-run") == 0
     assert (ws / ".archon-horizon" / "tasks" / "items" / "workspace-all.yaml").exists()
 

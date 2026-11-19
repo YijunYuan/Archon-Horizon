@@ -48,7 +48,7 @@ def dashboard_policy_rows(service: WorkspaceService | None) -> dict[str, str]:
     return {
         "Frozen projects": ", ".join(cfg.freeze_projects) or "none",
         "Other freezes": " · ".join(other) or "none",
-        "Max parallel": str(cfg.scheduler.max_parallel_sessions),
+        "Max parallel": str(cfg.scheduler.max_parallel_sessions or "Adaptive"),
     }
 
 

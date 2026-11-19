@@ -159,7 +159,8 @@ def set_task(
         if task.status != new_status:
             store.append_history(task_id, history_entry(actor, "status",
                                  before=task.status.value, after=new_status.value))
-            _sync_roadmap_refs_from_task(rstore, task, new_status, actor)
+            with rstore.edit_lock():
+                _sync_roadmap_refs_from_task(rstore, task, new_status, actor)
     if priority is not None:
         changes["priority"] = priority
     if objective is not None:

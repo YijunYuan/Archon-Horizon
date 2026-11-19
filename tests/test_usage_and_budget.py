@@ -151,8 +151,8 @@ def test_budget_config_parses_and_reports_configured() -> None:
     cfg = BudgetConfig.from_raw({"session_tokens_out": "1000", "run_cost_usd": 2.5})
     assert cfg.configured
     assert cfg.session_tokens_out == 1000
+    assert not BudgetConfig.from_raw({"run_tokens_out": 1}).configured
     assert cfg.run_cost_usd == 2.5
-    assert cfg.run_tokens_out is None
 
 
 def _orchestrator(tmp_path: Path, harness, budget: BudgetConfig | None):
@@ -190,12 +190,12 @@ def test_run_budget_stops_cleanly_with_pause_marker(tmp_path: Path) -> None:
 
     def burn(req: HarnessRequest) -> HarnessResult:
         calls.append(req.prompt)
-        return HarnessResult(ok=True, text="did work", usage=Usage(tokens_in=1, tokens_out=500))
+        return HarnessResult(ok=True, text="did work", usage=Usage(tokens_in=1, tokens_out=500, cost_usd=0.3))
 
-    orch = _orchestrator(tmp_path, NullHarness(burn), BudgetConfig(run_tokens_out=100))
+    orch = _orchestrator(tmp_path, NullHarness(burn), BudgetConfig(run_cost_usd=0.2))
     orch.run(RunRecord(id="", focus=Focus(tasks=("T-1",)), rounds_requested=3))
 
-    # First session crossed the 100-token run budget: no further sessions ran.
+    # First session crossed the monetary budget: no further sessions ran.
     assert len(calls) == 1
     assert orch.last_paused is not None
     assert orch.last_paused["reason"] == "budget"
@@ -270,5 +270,19 @@ def test_usage_cli_reads_session_and_run(tmp_path: Path, capsys, monkeypatch) ->
     assert payload["run"] == "0001"
     assert payload["session_usage"]["tokens_out"] == 600
     assert payload["run_usage"]["tokens_out"] == 600
-    assert payload["budget"]["run_tokens_out"] == 1000
-    assert payload["headroom"]["run_tokens_out"] == 400
+    assert "run_tokens_out" not in payload["budget"]
+    assert "run_tokens_out" not in payload["headroom"]
+
+
+def test_old_run_token_limit_is_ignored_across_rounds(tmp_path: Path) -> None:
+    from archon_horizon.core.sessions import Focus, RunRecord
+    from archon_horizon.harnesses.base import HarnessResult, Usage
+    from archon_horizon.harnesses.null import NullHarness
+
+    def burn(req):
+        return HarnessResult(ok=True, text="continue", usage=Usage(tokens_out=10_000))
+
+    orch = _orchestrator(tmp_path, NullHarness(burn), BudgetConfig.from_raw({"run_tokens_out": 1}))
+    reports = orch.run(RunRecord(id="", focus=Focus(tasks=("T-1",)), rounds_requested=3))
+    assert [r.tasks_run for r in reports] == [("T-1",)] * 3
+    assert orch.last_paused is None

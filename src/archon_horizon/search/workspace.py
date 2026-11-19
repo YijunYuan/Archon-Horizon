@@ -60,7 +60,8 @@ def resolve_source_roots(root: Path, cfg: WorkspaceConfig) -> dict[str, Path]:
         if not copies:
             log.info(
                 f"external library {lib.name!r}: no checked-out sources found "
-                f"(expected under .lake/packages); run `lake build` to fetch it, then `horizon search --reindex`."
+                f"in member Lake packages. Set its external_libraries path, install it as a member dependency, "
+                f"or remove the unused index entry."
             )
     return roots
 

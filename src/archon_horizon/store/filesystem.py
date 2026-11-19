@@ -15,6 +15,7 @@ import shutil
 from pathlib import Path
 
 from archon_horizon.core.events import Event
+from archon_horizon.core.locks import workspace_lock
 from archon_horizon.core.roadmap import Roadmap
 from archon_horizon.core.sessions import RunRecord
 from archon_horizon.core.tasks import HorizonTask
@@ -30,6 +31,7 @@ from archon_horizon.inboxes.sharded import (
 from archon_horizon.runlog import RunLogTree
 
 from . import serde
+from archon_horizon.core.atomic import write_text_atomic
 from .base import (
     EventLog,
     MemoryStore,
@@ -137,7 +139,7 @@ class FilesystemTaskStore(TaskStore):
             task = dataclasses.replace(task, id=self.allocate_id())
         self._items_dir.mkdir(parents=True, exist_ok=True)
         stored = dataclasses.replace(task, metadata=without_comments(task.metadata))
-        self._path(task.id).write_text(self._codec.dumps(serde.to_jsonable(stored)), "utf-8")
+        write_text_atomic(self._path(task.id), self._codec.dumps(serde.to_jsonable(stored)))
         return task
 
     def delete(self, task_id: str) -> None:
@@ -150,6 +152,9 @@ class FilesystemRoadmapStore(RoadmapStore):
     def __init__(self, directory: Path, codec: Codec | None = None) -> None:
         self._dir = directory
         self._codec = codec or JsonCodec()
+
+    def edit_lock(self):
+        return workspace_lock(self._dir.parent, "roadmap-edit")
 
     @property
     def _items_dir(self) -> Path:
@@ -185,7 +190,7 @@ class FilesystemRoadmapStore(RoadmapStore):
         self._items_dir.mkdir(parents=True, exist_ok=True)
         wanted = {item.id for item in items}
         for item in items:
-            self._item_path(item.id).write_text(self._codec.dumps(serde.to_jsonable(item)), "utf-8")
+            write_text_atomic(self._item_path(item.id), self._codec.dumps(serde.to_jsonable(item)))
         for path in self._items_dir.glob(f"*.{self._codec.extension}"):
             if path.stem not in wanted:
                 path.unlink()
@@ -249,7 +254,7 @@ class FilesystemRunStore(RunStore):
             run = dataclasses.replace(run, id=self._tree.allocate().id)
         path = self._path(run.id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self._codec.dumps(serde.to_jsonable(run)), "utf-8")
+        write_text_atomic(path, self._codec.dumps(serde.to_jsonable(run)))
         return run
 
 

@@ -19,15 +19,11 @@ workspace:
   rounds: {rounds}
   horizon_agent:
     harness: horizon-default
-  scheduler:
-    # How many horizon agents can run simultaneously.
-    max_parallel_sessions: {parallel}
-  # Optional spend ceilings; a crossed limit stops the run cleanly (resume with
+{scheduler_block}  # Optional spend ceilings; a crossed limit stops the run cleanly (resume with
   # `horizon run --resume latest`). Unset = unlimited. Agents can check their
   # headroom with `horizon usage`.
   # budget:
-  #   session_tokens_out: 400000   # cancel a session that emits more than this
-  #   run_tokens_out: 2000000      # stop the run past this many output tokens
+  #   session_tokens_out: 400000   # optional cap for one agent session
   #   run_cost_usd: 50             # stop the run past this estimated cost
 
 # Lean libraries the agents and the `horizon search` index should know about.
@@ -245,7 +241,7 @@ def _print_config_summary(data: dict) -> None:
     
     table.add_row("Mathlib Version", str(data.get("mathlib_version", "")))
     table.add_row("Rounds", str(data.get("rounds", "")))
-    table.add_row("Max Parallel", str(data.get("parallel", "")))
+    table.add_row("Scheduling", "Adaptive")
     
     is_gh_enabled = str(data.get("github_enabled", "")).lower() == "true"
     table.add_row("GitHub Sync", "Enabled" if is_gh_enabled else "Disabled")
@@ -521,7 +517,7 @@ class InitCommand:
             "horizon_model": "",  # blank defers to the engine's own default
             "mathlib_version": _detect_mathlib_version(self.root),
             "rounds": 5,
-            "parallel": 1,
+            "parallel": None,
             "github_enabled": "false",
             "github_repo": _detect_github_repo(),
             "goal": "",
@@ -651,7 +647,6 @@ class InitCommand:
                 data["mathlib_version"] = Prompt.ask("Mathlib version/rev", default=data["mathlib_version"])
                 _warn_mathlib_mismatch(self.root, data["mathlib_version"])
                 data["rounds"] = IntPrompt.ask("Number of collaboration rounds", default=data["rounds"])
-                data["parallel"] = IntPrompt.ask("Max parallel horizon sessions", default=data["parallel"])
                 
                 wants_gh = Confirm.ask("Enable GitHub inbox sync?", default=(data["github_enabled"] == "true"))
                 if wants_gh:
@@ -672,6 +667,8 @@ class InitCommand:
             data["horizon_options"] = _options_block(str(data["horizon_kind"]))
 
             self.root.mkdir(parents=True, exist_ok=True)
+            data["scheduler_block"] = (f"  scheduler:\n    max_parallel_sessions: {int(data['parallel'])}\n"
+                                       if data["parallel"] is not None else "")
             config_text = _CONFIG_TEMPLATE.format(**data)
             config_path.write_text(config_text, "utf-8")
             

@@ -9,6 +9,9 @@ minor releases; `horizon init --update` migrates a workspace's managed files.
 
 ## [Unreleased]
 
+- `horizon run` now supervises independent runs, using ready blueprint statements, roadmap dependencies, CPU utilization and available memory. The Dashboard shows worker assignments and resource pressure.
+- Initialization selects adaptive concurrency automatically. Run-wide output token limits are retired. Optional single-session token limits and monetary budgets remain available.
+
 - Skills now treat a **missing or stub blueprint** like an empty roadmap:
   unfinished orientation. Horizon should author a complete source-facing
   chapter (statements, proofs, `\uses`, cites) before or with the first
