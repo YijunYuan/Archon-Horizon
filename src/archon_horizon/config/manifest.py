@@ -9,6 +9,7 @@ propose a sensible default rev — without shelling out to ``lake``.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 # Aliases so a configured library name matches the package name Lake records.
@@ -30,21 +31,12 @@ def library_package_names(library: str) -> set[str]:
 
 
 def _iter_manifests(root: Path, project_dirs: tuple[Path, ...] | None = None):
-    for manifest in root.glob("**/lake-manifest.json"):
-        rel = manifest.relative_to(root)
-        # Skip hidden dirs (the Horizon state dir, .git, …) but not .lake itself.
-        if any(part.startswith(".") and part != ".lake" for part in rel.parts):
-            continue
-        # Only registered projects declare an intended rev; a stray Lake project
-        # in some non-project subdirectory (a vendored paper, an experiment) must
-        # not trigger a drift warning. When ``project_dirs`` is given, the
-        # manifest must live at or under one of them (the manifest sits at the
-        # project root, or under its ``.lake/`` packages tree).
-        resolved = manifest.parent.resolve()
-        if project_dirs is not None and not any(
-            resolved == d or d in resolved.parents for d in project_dirs
-        ):
-            continue
+    if project_dirs is not None:
+        manifests = (directory / "lake-manifest.json" for directory in project_dirs)
+    else:
+        manifests = (p for p in root.glob("**/lake-manifest.json")
+                     if not any(part.startswith(".") for part in p.relative_to(root).parts))
+    for manifest in manifests:
         try:
             data = json.loads(manifest.read_text("utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -72,6 +64,6 @@ def find_package_revs(
             if str(pkg.get("name", "")).lower() in wanted:
                 ids = {str(v) for v in (pkg.get("rev"), pkg.get("inputRev")) if v}
                 if ids:
-                    key = str(manifest.parent.relative_to(root) or ".")
+                    key = os.path.relpath(manifest.parent, root)
                     revs.setdefault(key, set()).update(ids)
     return revs

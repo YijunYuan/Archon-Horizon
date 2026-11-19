@@ -701,14 +701,16 @@ class InitCommand:
                     )
                 )
 
-        # Initialize Git if needed
-        import subprocess
-        if not (self.root / ".git").exists():
-            subprocess.run(["git", "init", "-b", "main"], cwd=self.root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            log.success("Initialized empty Git repository on branch 'main'.")
-            
-        # Update .gitignore. The state directory is the workspace ledger, so
-        # keep it trackable while excluding volatile project git dirs and locks.
+        # A workspace can be just a directory containing independent checkouts.
+        if self.update:
+            from archon_horizon.config.loader import load_config
+            from archon_horizon.vcs.git import ensure_project_git, git_available
+
+            for project in load_config(self.root).projects.values():
+                if git_available():
+                    ensure_project_git(self.root / project.path)
+
+        # Ignore volatile state if the workspace has (or later gains) a publish repo.
         gitignore = self.root / ".gitignore"
         lines: list[str] = []
         if gitignore.exists():

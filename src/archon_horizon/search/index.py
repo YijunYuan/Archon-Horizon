@@ -306,7 +306,8 @@ class LeanSearchIndex:
         hits = [
             SearchHit(self.declarations[i], s)
             for i, s in scores.items()
-            if library is None or self.declarations[i].library == library
+            if library is None or self.declarations[i].library.partition("@")[0] == library
+            or self.declarations[i].library == library
         ]
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[:limit]
@@ -314,7 +315,7 @@ class LeanSearchIndex:
     def search_name(self, query: str, *, limit: int = 10, library: str | None = None) -> list[SearchHit]:
         hits: list[SearchHit] = []
         for d in self.declarations:
-            if library is not None and d.library != library:
+            if library is not None and library not in (d.library, d.library.partition("@")[0]):
                 continue
             score = _name_score(query, d.name)
             if score > 0:
@@ -326,7 +327,7 @@ class LeanSearchIndex:
         regex = _type_pattern_to_regex(pattern)
         hits: list[SearchHit] = []
         for d in self.declarations:
-            if library is not None and d.library != library:
+            if library is not None and library not in (d.library, d.library.partition("@")[0]):
                 continue
             sig = _normalize_sig(d.signature)
             if regex.search(sig):

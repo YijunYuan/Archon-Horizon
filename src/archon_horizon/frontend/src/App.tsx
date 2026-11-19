@@ -2664,8 +2664,8 @@ function GitUnifiedDiff({ text }: { text: string }) {
 
 // One file row: click the name to lazily load and expand its diff. Only the
 // base file name is shown (paths are often very long); hover reveals the path.
-function FileChangeRow({ runId, session, file, showComments, sha }: {
-  runId: string; session: string; file: SessionChangeFile; showComments: boolean; sha: string;
+function FileChangeRow({ runId, session, file, showComments, sha, project }: {
+  runId: string; session: string; file: SessionChangeFile; showComments: boolean; sha: string; project?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [diff, setDiff] = useState<FileDiff | null>(null);
@@ -2677,7 +2677,7 @@ function FileChangeRow({ runId, session, file, showComments, sha }: {
     setOpen(next);
     if (next && diff === null) {
       // Commit-granular: exactly what this one commit changed in the file.
-      getSessionFileDiff(runId, session, file.path, sha).then(setDiff).catch(() => setDiff({ path: file.path, available: false, diff: '' }));
+      getSessionFileDiff(runId, session, file.path, sha, project).then(setDiff).catch(() => setDiff({ path: file.path, available: false, diff: '' }));
     }
   };
   return (
@@ -2729,7 +2729,7 @@ function CommitCard({ commit, runId, session }: { commit: CommitChange; runId: s
         <span className="change-caret">{open ? '▾' : '▸'}</span>
         <span className={`commit-kind ${commit.kind || 'other'}`}>{isAgent ? (commit.role || 'agent') : (commit.kind || 'commit')}</span>
         <span className="commit-copy">
-          <span className="commit-subject">{commit.subject}</span>
+          <span className="commit-subject">{commit.project && `${commit.project} · `}{commit.subject}</span>
           {commit.created_at && (
             <time className="commit-time" dateTime={commit.created_at} title={commit.created_at}>
               {formatDateTime(commit.created_at)}
@@ -2753,7 +2753,7 @@ function CommitCard({ commit, runId, session }: { commit: CommitChange; runId: s
           <table className="change-table">
             <tbody>
               {files.map((f) => (
-                <FileChangeRow key={f.path} runId={runId} session={session} file={f} showComments sha={commit.sha} />
+                <FileChangeRow key={f.path} runId={runId} session={session} file={f} showComments sha={commit.sha} project={commit.project} />
               ))}
             </tbody>
           </table>
@@ -2765,7 +2765,7 @@ function CommitCard({ commit, runId, session }: { commit: CommitChange; runId: s
 
 // The commit-granular "progress" panel for a session: each commit is a card whose
 // message + diff IS the progress record. Fetched lazily from /api/session/commits.
-function SessionCommitsPanel({ runId, session }: { runId: string; session: string }) {
+function SessionCommitsPanel({ runId, session, running }: { runId: string; session: string; running: boolean }) {
   const COMMIT_PAGE = 3;
   // The inbox-activity list arrives whole in the page payload (not server-paged
   // like commits), so long sessions dumped dozens of rows at once. Cap it and
@@ -2781,60 +2781,51 @@ function SessionCommitsPanel({ runId, session }: { runId: string; session: strin
   const [roadmapExpanded, setRoadmapExpanded] = useState(false);
   const [total, setTotal] = useState<number | null>(null);
   const [nextOffset, setNextOffset] = useState<number | null>(null);
+  const [visibleCount, setVisibleCount] = useState(COMMIT_PAGE);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState<string>('');
+  const [error, setError] = useState('');
   useEffect(() => {
     if (STATIC) return;
     let live = true;
-    setCommits(null);
-    setInbox(null);
-    setInboxExpanded(false);
-    setRoadmap(null);
-    setCommitCounts({});
-    setAttempts([]);
-    setChecks([]);
-    setRoadmapExpanded(false);
-    setTotal(null);
-    setNextOffset(null);
-    setLoadingMore(false);
-    setError('');
-    getSessionCommits(runId, session, 0, COMMIT_PAGE)
-      .then((page) => {
+    let timer: ReturnType<typeof setTimeout>;
+    async function refresh() {
+      try {
+        const page = await getSessionCommits(runId, session, 0, Math.min(100, visibleCount));
+        const rows = [...page.commits];
+        let next = page.next_offset ?? null;
+        while (live && next !== null && rows.length < visibleCount) {
+          const older = await getSessionCommits(runId, session, next, Math.min(100, visibleCount - rows.length));
+          rows.push(...older.commits);
+          next = older.next_offset ?? null;
+        }
         if (!live) return;
-        setTotal(page.total ?? page.commits?.length ?? 0);
-        setCommits(page.commits ?? []);
-        setInbox(page.inbox ?? { items: [], created: 0, comments: 0, actions: 0, total: 0 });
-        setRoadmap(page.roadmap ?? { items: [], created: 0, status_changes: 0, comments: 0, total: 0 });
+        setCommits(rows);
+        setTotal(page.total ?? rows.length);
+        setNextOffset(next);
+        setInbox(page.inbox ?? null);
+        setRoadmap(page.roadmap ?? null);
         setCommitCounts(page.commit_counts ?? {});
         setAttempts(page.attempts ?? []);
         setChecks(page.checks ?? []);
-        setNextOffset(page.has_more ? (page.next_offset ?? null) : null);
-      })
-      .catch(() => {
+        setError('');
+      } catch {
         if (!live) return;
-        setCommits([]);
-        setInbox({ items: [], created: 0, comments: 0, actions: 0, total: 0 });
-        setRoadmap({ items: [], created: 0, status_changes: 0, comments: 0, total: 0 });
-        setCommitCounts({});
-        setAttempts([]);
-        setChecks([]);
+        setCommits(current => current ?? []);
         setError('Unable to load commits.');
-      });
-    return () => { live = false; };
-  }, [runId, session]);
+      } finally {
+        if (live) {
+          setLoadingMore(false);
+          if (running) timer = setTimeout(refresh, 5000);
+        }
+      }
+    }
+    void refresh();
+    return () => { live = false; clearTimeout(timer); };
+  }, [runId, session, running, visibleCount]);
 
   const loadMore = () => {
-    if (nextOffset == null || loadingMore) return;
     setLoadingMore(true);
-    setError('');
-    getSessionCommits(runId, session, nextOffset, COMMIT_PAGE)
-      .then((page) => {
-        setCommits((current) => [...(current ?? []), ...(page.commits ?? [])]);
-        setTotal(page.total ?? total);
-        setNextOffset(page.has_more ? (page.next_offset ?? null) : null);
-      })
-      .catch(() => setError('Unable to load older commits.'))
-      .finally(() => setLoadingMore(false));
+    setVisibleCount(current => current + COMMIT_PAGE);
   };
   if (STATIC) {
     return (
@@ -2971,7 +2962,7 @@ function SessionCommitsPanel({ runId, session }: { runId: string; session: strin
         {commitKindSummary && <span className="session-inbox-totals">{commitKindSummary}</span>}
       </summary>
       <div className="commit-cards">
-        {commits.map((c) => <CommitCard key={c.sha} commit={c} runId={runId} session={session} />)}
+        {commits.map((c) => <CommitCard key={`${c.project ?? ''}:${c.sha}`} commit={c} runId={runId} session={session} />)}
         {nextOffset != null && (
           <button type="button" className="commit-load-more" onClick={loadMore} disabled={loadingMore}>
             {loadingMore ? 'Loading...' : `Show ${Math.min(COMMIT_PAGE, Math.max(0, (total ?? commits.length) - commits.length))} more`}
@@ -3169,7 +3160,7 @@ function TranscriptViewer({
         </div>
       </div>
       {runId && session?.session && !session?.synthetic && (
-        <SessionCommitsPanel runId={runId} session={session.session} />
+        <SessionCommitsPanel key={`${runId}/${session.session}`} runId={runId} session={session.session} running={session.status === 'running'} />
       )}
       {recommendation && recommendation.trim() && (
         <details className="log-panel report-panel" open>

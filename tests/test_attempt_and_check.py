@@ -29,6 +29,7 @@ def _workspace(tmp_path: Path) -> tuple[Path, Path, Path]:
     root = tmp_path / "ws"
     project = root / "projects" / "ag-main"
     project.mkdir(parents=True)
+    (project / "lakefile.toml").write_text('name = "ag-main"\n', "utf-8")
     (root / "config.yaml").write_text(_CONFIG, "utf-8")
     session = root / ".archon-horizon" / "runs" / "0001" / "sessions" / "s1"
     session.mkdir(parents=True)
@@ -95,3 +96,27 @@ def test_check_serializes_and_reuses_identical_concurrent_request(
     assert calls.read_text("utf-8").splitlines() == ["call"]
     results = [json.loads(path.read_text("utf-8")) for path in (session / "checks").glob("*.json")]
     assert results and any(result["status"] in {"passed", "reused"} for result in results)
+
+
+def test_check_uses_owning_lake_root(tmp_path: Path, monkeypatch, capfd) -> None:
+    root, project, _ = _workspace(tmp_path)
+    other = root / "other"
+    other.mkdir()
+    with (root / "config.yaml").open("a") as config:
+        config.write("  other: {path: other}\n")
+    (other / "lakefile.lean").touch()
+    (other / "File.lean").touch()
+    fake = tmp_path / "lake"
+    fake.write_text('#!/bin/sh\nmkdir -p .lake/build\n')
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    monkeypatch.chdir(project)
+    assert main(["--root", str(root), "check", "--lean", str(other / "File.lean"), "--json"]) == 0
+    assert json.loads(capfd.readouterr().out)["cwd"] == "other"
+    assert (other / ".lake/build").is_dir()
+    assert not (project / ".lake").exists() and not (root / ".lake").exists()
+    monkeypatch.chdir(root)
+    assert main(["--root", str(root), "check", "--json"]) != 0
+    assert main(["--root", str(root), "check", "--project", "ag-main", "--json"]) == 0
+    assert (project / ".lake/build").is_dir()
+    assert len(list((root / ".archon-horizon/cache/checks").glob("project-*.lock"))) == 2

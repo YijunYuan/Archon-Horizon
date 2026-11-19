@@ -24,7 +24,6 @@ from archon_horizon.server.service import WorkspaceService
 from archon_horizon.transcript.model import TranscriptEvent, TranscriptKind
 from archon_horizon.transcript.sink import JsonlTranscriptSink
 from archon_horizon.vcs.git import WorkspaceGit, git_available
-from archon_horizon.vcs.integration import integrate_workspace_baseline, integrate_workspace_session
 
 pytestmark = pytest.mark.skipif(not git_available(), reason="git not installed")
 
@@ -51,37 +50,6 @@ def _identity() -> None:
         os.environ.setdefault(k, v)
 
 
-def _emit_integration(service: WorkspaceService, integ, round_index: int) -> None:
-    service.stores.events.append(Event(
-        type="workspace.session.integrated",
-        id=uuid.uuid4().hex,
-        actor="orchestrator",
-        data={
-            "run_id": integ.run_id,
-            "session": integ.session,
-            "role": integ.role,
-            "projects": list(integ.projects),
-            "workspace_commit": integ.workspace_commit,
-            "files": list(integ.workspace_files),
-        },
-    ))
-
-
-def _emit_baseline(service: WorkspaceService, run_id: str, outcome, projects: tuple[str, ...]) -> None:
-    service.stores.events.append(Event(
-        type="workspace.run_baseline",
-        id=uuid.uuid4().hex,
-        actor="orchestrator",
-        data={
-            "run_id": run_id,
-            "sha": outcome.sha,
-            "changed": outcome.changed,
-            "files": list(outcome.files),
-            "projects": list(projects),
-        },
-    ))
-
-
 def test_session_commits_view_reports_per_commit_change(tmp_path: Path, monkeypatch) -> None:
     # The commit-granular view: each commit a session made is reported on its own,
     # with only what THAT commit changed (message + per-file diff) — the basis for
@@ -89,7 +57,10 @@ def test_session_commits_view_reports_per_commit_change(tmp_path: Path, monkeypa
     _identity()
     ws = tmp_path / "ws"
     main(["--root", str(ws), "init", "--no-interactive"])
-    main(["--root", str(ws), "project", "add", "proj", "projects/proj"])
+    # Recreate an old workspace whose source snapshots lived in the ledger.
+    config = ws / "config.yaml"
+    config.write_text(config.read_text().replace("projects: {}", "projects: {proj: {path: projects/proj}}"))
+    WorkspaceGit(ws).init()
 
     service = WorkspaceService(ws)
     lean = ws / "projects" / "proj" / "Foo.lean"
@@ -129,10 +100,6 @@ def test_session_commits_view_reports_per_commit_change(tmp_path: Path, monkeypa
     )
     lean.write_text("theorem a : True := trivial\n", "utf-8")
     _ledger_commit(ws, "Discharge a", str(lean))
-    i1 = integrate_workspace_session(service.workspace, run_id=run.id, session=s1.name,
-                                     role="horizon", round_index=0, project="proj", projects=("proj",))
-    _emit_integration(service, i1, 0)
-
     view = service.session_commits_view(run.id, s1.name)
     assert {key: value for key, value in view["inbox"].items() if key != "items"} == {
         "created": 1, "comments": 1, "actions": 1, "total": 1,
@@ -161,17 +128,7 @@ def test_session_commits_view_reports_per_commit_change(tmp_path: Path, monkeypa
     # The two semantic commits are tagged as agent work…
     assert by_subject["Introduce a"]["kind"] == "agent"
     assert by_subject["Discharge a"]["kind"] == "agent"
-    # Source-only ledger: session integration commits config + project sources.
-    # When the agent already committed those paths, integration is a no-op (no
-    # empty bookkeeping commit). An integration row appears only when something
-    # source-side still differed at session end.
-    assert view["commit_counts"]["agent"] == 2
-    assert view["commit_counts"].get("integration", 0) in (0, 1)
-    if i1.workspace_commit:
-        assert any(c["kind"] == "integration" for c in view["commits"])
-        assert view["commit_counts"]["integration"] == 1
-    else:
-        assert not any(c["kind"] == "integration" for c in view["commits"])
+    assert view["commit_counts"] == {"agent": 2}
     assert view["outcome"]["durable_result"] == "agent_commit"
 
     # Endpoint parity + registered for static export.
@@ -287,7 +244,8 @@ def test_legacy_interactive_session_recovers_explicit_transcript_commit(
     _identity()
     ws = tmp_path / "ws"
     main(["--root", str(ws), "init", "--no-interactive"])
-    main(["--root", str(ws), "project", "add", "proj", "projects/proj"])
+    config = ws / "config.yaml"
+    config.write_text(config.read_text().replace("projects: {}", "projects: {proj: {path: projects/proj}}"))
     for key in (
         "ARCHON_HORIZON_RUN",
         "ARCHON_HORIZON_SESSION",

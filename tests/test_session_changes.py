@@ -9,8 +9,7 @@ import pytest
 
 from archon_horizon.core.workspace import Project, Workspace
 from archon_horizon.server.changes_api import session_change_summary
-from archon_horizon.vcs.git import git_available
-from archon_horizon.vcs.integration import integrate_workspace_session
+from archon_horizon.vcs.git import WorkspaceGit, git_available
 
 pytestmark = pytest.mark.skipif(not git_available(), reason="git not installed")
 
@@ -27,6 +26,15 @@ def _workspace(tmp_path: Path) -> Workspace:
     return Workspace(name="ws", root=tmp_path, projects={"p": Project(name="p", path=Path("projects/p"))})
 
 
+def _snapshot(ws: Workspace) -> str:
+    # Historical workspaces stored a session snapshot in this out-of-tree repo.
+    ledger = WorkspaceGit(ws.root)
+    ledger.init()
+    sha = ledger.commit("session snapshot", paths=["projects/p"])
+    assert sha
+    return sha
+
+
 def test_session_change_summary_reports_sorry_delta(tmp_path: Path) -> None:
     _identity()
     ws = _workspace(tmp_path)
@@ -36,18 +44,16 @@ def test_session_change_summary_reports_sorry_delta(tmp_path: Path) -> None:
 
     # Session 1: introduce a file with two sorries.
     lean.write_text("theorem a : True := by sorry\ntheorem b : True := by sorry\n", "utf-8")
-    s1 = integrate_workspace_session(ws, run_id="0001", session="0001-horizon", role="horizon",
-                                     round_index=0, project="p", task_id="T", projects=("p",))
+    s1 = _snapshot(ws)
 
     # Session 2: discharge one sorry.
     lean.write_text("theorem a : True := trivial\ntheorem b : True := by sorry\n", "utf-8")
-    s2 = integrate_workspace_session(ws, run_id="0001", session="0002-horizon", role="horizon",
-                                     round_index=1, project="p", task_id="T", projects=("p",))
+    s2 = _snapshot(ws)
 
     projpath = (proj.relative_to(tmp_path)).as_posix()
     # Diff session 2 against session 1's commit (the previous session), as the
     # service does — not the raw git parent.
-    summary = session_change_summary(tmp_path, s2.workspace_commit, (projpath,), base=s1.workspace_commit)
+    summary = session_change_summary(tmp_path, s2, (projpath,), base=s1)
 
     assert summary["available"] is True
     assert summary["sorry_delta"] == -1
@@ -59,7 +65,7 @@ def test_session_change_summary_reports_sorry_delta(tmp_path: Path) -> None:
     assert row["decl_after"] == {"theorem": 2}
     assert summary["lean"]["decl_after"] == {"theorem": 2}
     # The run's first session (base=None) sees the file as newly added, 2 sorries.
-    first = session_change_summary(tmp_path, s1.workspace_commit, (projpath,), base=None)
+    first = session_change_summary(tmp_path, s1, (projpath,), base=None)
     assert first["available"] and first["sorry_delta"] == 2
     assert next(r for r in first["files"] if r["path"].endswith("Foo.lean"))["added"] is True
 
@@ -76,8 +82,7 @@ def test_session_change_summary_reports_declaration_deltas(tmp_path: Path) -> No
 
     lean.write_text("def f : Nat := 0\ntheorem a : True := trivial\n", "utf-8")
     tex.write_text("\\begin{theorem}\\label{a} A.\\end{theorem}\n", "utf-8")
-    s1 = integrate_workspace_session(ws, run_id="0001", session="0001-horizon", role="horizon",
-                                     round_index=0, project="p", projects=("p",))
+    s1 = _snapshot(ws)
 
     lean.write_text(
         "def f : Nat := 0\n"
@@ -91,10 +96,9 @@ def test_session_change_summary_reports_declaration_deltas(tmp_path: Path) -> No
         "\\begin{definition}\\label{c} C.\\end{definition}\n",
         "utf-8",
     )
-    s2 = integrate_workspace_session(ws, run_id="0001", session="0002-horizon", role="horizon",
-                                     round_index=1, project="p", projects=("p",))
+    s2 = _snapshot(ws)
 
-    summary = session_change_summary(tmp_path, s2.workspace_commit, (projpath,), base=s1.workspace_commit)
+    summary = session_change_summary(tmp_path, s2, (projpath,), base=s1)
     lean_row = next(r for r in summary["files"] if r["path"].endswith("Foo.lean"))
     tex_row = next(r for r in summary["files"] if r["path"].endswith("chapter.tex"))
 
@@ -117,14 +121,12 @@ def test_first_session_falls_back_to_git_parent(tmp_path: Path) -> None:
 
     # System snapshot at run start (2 sorries), then the first agent session (1).
     lean.write_text("theorem a : True := by sorry\ntheorem b : True := by sorry\n", "utf-8")
-    integrate_workspace_session(ws, run_id="0001", session="0001-system", role="system",
-                                round_index=0, projects=("p",))
+    _snapshot(ws)
     lean.write_text("theorem a : True := trivial\ntheorem b : True := by sorry\n", "utf-8")
-    s2 = integrate_workspace_session(ws, run_id="0001", session="0002-horizon", role="horizon",
-                                     round_index=0, project="p", projects=("p",))
+    s2 = _snapshot(ws)
 
     # base=None → falls back to the parent (the system snapshot): −1 sorry, not initial.
-    summary = session_change_summary(tmp_path, s2.workspace_commit, (projpath,), base=None)
+    summary = session_change_summary(tmp_path, s2, (projpath,), base=None)
     assert summary["available"] and summary["initial"] is False
     assert summary["sorry_delta"] == -1
 
@@ -142,19 +144,16 @@ def test_diffs_against_git_parent_not_far_same_run_ancestor(tmp_path: Path) -> N
 
     # Commit 1 (run A): Foo exists.
     (proj / "Foo.lean").write_text("theorem a : True := by sorry\n", "utf-8")
-    integrate_workspace_session(ws, run_id="A", session="0001-horizon", role="horizon",
-                                round_index=0, project="p", projects=("p",))
+    _snapshot(ws)
     # Commit 2 (another run B) lands in between, adding many unrelated files.
     for i in range(5):
         (proj / f"Other{i}.lean").write_text("def x := 0\n" * 50, "utf-8")
-    integrate_workspace_session(ws, run_id="B", session="0001-horizon", role="horizon",
-                                round_index=0, project="p", projects=("p",))
+    _snapshot(ws)
     # Commit 3 (run A again): only touches Foo. Its git parent is B's commit.
     (proj / "Foo.lean").write_text("theorem a : True := trivial\n", "utf-8")
-    s3 = integrate_workspace_session(ws, run_id="A", session="0003-horizon", role="horizon",
-                                     round_index=1, project="p", projects=("p",))
+    s3 = _snapshot(ws)
 
-    summary = session_change_summary(tmp_path, s3.workspace_commit, (projpath,), base=None)
+    summary = session_change_summary(tmp_path, s3, (projpath,), base=None)
     changed = {r["path"] for r in summary["files"]}
     # Only Foo.lean — the 5 Other*.lean from run B are in the parent, not this diff.
     assert changed == {f"{projpath}/Foo.lean"}

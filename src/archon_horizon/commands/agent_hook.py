@@ -43,7 +43,7 @@ _PARALLEL_CHECK_SECONDS = 30.0
 _DEFAULT_STATE_DIR = ".archon-horizon"
 _COMMIT_COMMAND = re.compile(
     r'(?:^|[;&|]\s*)(?:git|hgit|\$HORIZON_GIT|"\$HORIZON_GIT")'
-    r"(?:\s+-\S+)*\s+commit(?:\s|$)"
+    r"""(?:\s+(?:-C\s+(?:"[^"]*"|'[^']*'|[^\s;&|]+)|-\S+))*\s+commit(?:\s|$)"""
 )
 _MUTATING_COMMAND = re.compile(
     r"(?:^|[;&|]\s*)(?:apply_patch|sed\s+-i|perl\s+-pi|git\s+apply|"
@@ -485,7 +485,8 @@ def _is_mutating_tool(payload: dict[str, Any]) -> bool:
         return False
     command = tool_input.get("command") or tool_input.get("cmd")
     return isinstance(command, str) and bool(
-        _MUTATING_COMMAND.search(command) or _HORIZON_STATE_COMMAND.search(command)
+        _MUTATING_COMMAND.search(command)
+        or (not os.environ.get("HORIZON_PROJECT_ROOTS") and _HORIZON_STATE_COMMAND.search(command))
     )
 
 
@@ -600,7 +601,7 @@ def _commit_checkpoint(
     parallel_runs: list[dict[str, str]],
 ) -> tuple[bool, tuple[str, ...]]:
     """Prefer real ledger status unless another live run makes it ambiguous."""
-    if not parallel_runs:
+    if not parallel_runs and not os.environ.get("HORIZON_PROJECT_ROOTS"):
         dirty_paths = _ledger_dirty_paths(root)
         if dirty_paths is not None:
             return bool(dirty_paths), dirty_paths
@@ -745,7 +746,7 @@ def hook_response(root: Path, payload: dict[str, Any]) -> dict[str, Any] | None:
                         path_note += "."
                 reasons.append(
                     "HORIZON COMMIT CHECKPOINT: durable changes remain after the last "
-                    "observed ledger commit. Commit coherent authored changes with "
+                    "observed commit. Commit coherent authored changes with "
                     "`$HORIZON_GIT` using explicit paths. Do not commit another writer's "
                     "changes; identify pre-existing or concurrent paths in the report "
                     f"instead.{path_note}"
@@ -870,8 +871,7 @@ def hook_response(root: Path, payload: dict[str, Any]) -> dict[str, Any] | None:
                 "hookSpecificOutput": {
                     "hookEventName": event,
                     "additionalContext": (
-                        "HORIZON COMMIT CHECKPOINT: coherent edits are still uncommitted "
-                        "(including task, roadmap, or inbox state). Checkpoint explicit "
+                        "HORIZON COMMIT CHECKPOINT: coherent edits are still uncommitted. Checkpoint explicit "
                         "paths with `$HORIZON_GIT` "
                         "before expanding scope. Preserve rejected drafts first with "
                         "`$HORIZON_BIN attempt save ... --reason ...`."

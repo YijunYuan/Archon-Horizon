@@ -104,23 +104,14 @@ is what GitHub Pages serves. You do **not** need to put raw
 `.archon-horizon/runs/`, generated `hgraph/nodes/*.md`, or the agent ledger on
 GitHub for the public site to work.
 
-Two git identities stay separate on purpose:
+Proof commits live in each member's Git history. The live Logs page reads
+session commits from their owning repository, refreshes an open running session
+every five seconds, and displays a file diff against the commit's parent.
+Sessions from older releases use the existing workspace ledger.
 
-| Repo | Role |
-| :--- | :--- |
-| **Horizon ledger** (`.archon-horizon/vcs/workspace.git`) | Agent **source** journal: Lean, blueprints, `config.yaml`. Not Horizon state (`.archon-horizon/`) and not `**/hgraph/` — those stay on disk for the live dashboard. |
-| **User `.git`** (repo root) | What you push to GitHub. Static export prefers committing `dashboard/` + the Pages workflow **here** when a root `.git` exists. Optionally version state/hgraph here if you want human history. |
-
-Mirroring every agent commit into `.git` is unnecessary and would reintroduce
-ledger noise on the public remote. Prefer:
-
-1. Agents commit proofs to the ledger as today.
-2. When you want a public update: `horizon dashboard --static …` (optionally
-   with `--workflow`), push the user repo, Pages deploys the committed
-   `dashboard/` tree.
-3. Or rebuild the snapshot in CI from sources + a checked-out workspace state
-   (install Horizon, run export, upload Pages) if you want the site to refresh
-   without a local export step.
+When the workspace already has its own publish repository, a static export
+commits the dashboard snapshot and optional Pages workflow there. Without a
+publish repository, the exported files remain in the output directory.
 
 Static snapshots include the most recent 8 sessions and up to 2 transcript pages
 (120 events per page) by default; pass `--history-limit` and

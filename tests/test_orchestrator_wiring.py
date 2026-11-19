@@ -50,7 +50,7 @@ def test_frozen_horizon_agent_blocks_tasks(tmp_path: Path) -> None:
     assert orch.task_store.get("R-1").status is TaskStatus.BLOCKED
 
 
-def test_session_meta_includes_workspace_sha(tmp_path: Path) -> None:
+def test_session_keeps_legacy_ledger_intact(tmp_path: Path) -> None:
     root = _setup(tmp_path)
     git = WorkspaceGit(root)
     git.init()
@@ -70,28 +70,21 @@ def test_session_meta_includes_workspace_sha(tmp_path: Path) -> None:
     meta = horizon_sessions[0] / "meta.json"
     assert meta.exists()
     assert sha
-    # The run opens with a baseline commit, so the ground session records the
-    # workspace HEAD as of when it ran (the baseline) — a real 40-hex commit in
-    # the ledger, not necessarily the pre-run initial sha.
-    recorded = json.loads(meta.read_text("utf-8")).get("workspace_sha")
-    assert isinstance(recorded, str) and len(recorded) == 40
-    assert WorkspaceGit(root)._run(["cat-file", "-t", recorded]) == "commit"  # noqa: SLF001
+    assert "workspace_sha" not in json.loads(meta.read_text())
+    assert git.current_sha() == sha
+    record = json.loads((meta.parent / "project-git.json").read_text())
+    assert record["projects"] == ["ag-main"]
+    assert record["commits"] == {}
 
 
-def test_run_starts_with_workspace_baseline_commit(tmp_path: Path) -> None:
+def test_run_starts_with_project_revisions(tmp_path: Path) -> None:
     root = _setup(tmp_path)
 
     orch = build_orchestrator(root, harnesses={"inf": NullHarness(""), "hor": NullHarness("")})
     orch.run(RunRecord(id="", rounds_requested=1))
 
-    git = WorkspaceGit(root)
-    subjects = git._run(["log", "--format=%s", "--max-count=10"]).splitlines()  # noqa: SLF001
-    assert "workspace[0001] system: baseline" in subjects
-    baseline = git._run([  # noqa: SLF001
-        "log",
-        "--fixed-strings",
-        "--grep=Archon-Commit: baseline",
-        "--format=%(trailers:key=Archon-Session,valueonly)",
-        "--max-count=1",
-    ])
-    assert baseline == "run-baseline"
+    events = [json.loads(line) for line in (root / ".archon-horizon/events.jsonl").read_text().splitlines()]
+    baseline = next(e for e in events if e["type"] == "workspace.run_baseline")
+    assert baseline["data"]["project_heads"] == {"ag-main": None}
+    assert (root / "projects/ag-main/.git").is_dir()
+    assert not WorkspaceGit(root).is_repo()

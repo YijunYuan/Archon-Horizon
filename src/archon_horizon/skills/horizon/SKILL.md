@@ -15,7 +15,7 @@ Think of your session as **one team**: you (the lead) plus the subagents you
 spawn as your **workers**, with the tools and skills available to you. A
 `horizon run` is your team working through its task. Other runs are **other
 teams** working in parallel on the *same shared workspace* — one Lean project set,
-one roadmap/board, one ledger, one inbox.
+one roadmap/board and one inbox. Each project owns its Git repository and Lake build.
 
 You do not manage other teams and they do not manage you. You coordinate through
 **shared state**, not meetings:
@@ -25,7 +25,7 @@ You do not manage other teams and they do not manage you. You coordinate through
 - **The inbox** is asynchronous messaging + memory across teams (skill:
   `horizon-inbox`): shared notes, per-task private items, and direct messages to
   another team.
-- **Commits** are the durable record; reading recent ledger history tells you what
+- **Commits** are the durable record; reading the relevant project history tells you what
   other teams just produced (skill: `project-git`).
 
 Before you start, be aware of who else is live (see "Is another run live" below).
@@ -121,8 +121,7 @@ The harness exports these to every session — read them instead of guessing:
 | `ARCHON_HORIZON_PROJECTS` | comma-separated projects this task spans |
 | `ARCHON_HORIZON_TMP` | disposable per-session scratch directory; temp-aware tools are routed here instead of `/tmp` |
 | `ARCHON_HORIZON_TMP_ROOT` | workspace scratch root (`.archon-horizon/tmp/`) for safe stale cleanup |
-| `HORIZON_BIN`, `HORIZON_GIT` | absolute paths to the CLI and the ledger-git wrapper |
-| `HORIZON_LEDGER_GIT_DIR`, `HORIZON_LEDGER_WORK_TREE` | the workspace ledger repo + its work tree — `"$HORIZON_GIT" …` is shorthand for `git --git-dir "$HORIZON_LEDGER_GIT_DIR" --work-tree "$HORIZON_LEDGER_WORK_TREE" …` |
+| `HORIZON_BIN`, `HORIZON_GIT` | absolute paths to the CLI and the project Git wrapper |
 
 ## Disposable scratch (quota-safe)
 
@@ -141,7 +140,7 @@ export TMPDIR="$ARCHON_HORIZON_TMP" TMP="$ARCHON_HORIZON_TMP" TEMP="$ARCHON_HORI
 ```
 
 Do not put reports, evidence, rejected attempts, or source changes here:
-copy durable material into the session/report or the ledger before the session
+copy durable material into the session/report or the project repository before the session
 ends.
 
 The path is normally removed automatically after the invocation. If a process
@@ -157,7 +156,7 @@ that dry-run check and apply it when the candidates are clearly stale.
 Sessions end for reasons you don't control: rate limits, usage caps, budgets.
 The defense is NOT to avoid work — it is to make interruption cheap:
 
-- **Commit at every coherent point** (plain git into the ledger, below). If
+- **Commit at every coherent point** (in the owning project, below). If
   `"$HORIZON_BIN" usage --json` shows low budget headroom or recent
   `rate_limit`/`usage_limit` signals, commit what you have NOW and prefer
   finishing the piece in flight over opening a new front.
@@ -165,7 +164,7 @@ The defense is NOT to avoid work — it is to make interruption cheap:
   `ARCHON_HORIZON_ROUNDS`), leave the workspace hand-off-clean: commit, update
   the roadmap/task status, and write the report as if nobody continues today.
 - Interrupted anyway? Nothing is lost that was committed — the next session
-  resumes from the ledger (see "Resuming" below).
+  resumes from project history (see "Resuming" below).
 
 ## One-shot discipline (important)
 
@@ -212,7 +211,7 @@ checkpoints:
 - immediately after a strategy pivot, a broad workspace edit, or a surprising
   clean/build result.
 
-Give it the task/project scope and ask it to inspect the actual ledger diff,
+Give it the task/project scope and ask it to inspect the actual project diff,
 blueprint graph, Lean state, roadmap, inbox, and reports with fresh context. It
 is read-only on source and reports issues/memory; reconcile its findings before
 continuing. Use **`work-reviewer`** for a progress-integrity audit of one task's
@@ -382,9 +381,8 @@ its stated caps, and follow the account/usage notes the user recorded.
 ## Record progress = commit (this is how progress is read)
 
 Your commits — message + diff — are the durable record of what you did; the
-dashboard reads progress from them. Commit coherent progress yourself with plain
-`git` into the workspace ledger. Skill: `project-git` (use `"$HORIZON_GIT" commit -m …`
-or the explicit `--git-dir/--work-tree` form; provenance trailers are auto-stamped).
+dashboard reads progress from them. Commit coherent progress yourself in the owning project with `"$HORIZON_GIT" commit -m … -- <files>`.
+Load `project-git` for session provenance and handling existing staged changes.
 
 Write **semantic, math-first** messages that say what you proved/built. Prefer
 staging explicit files over `add -A`. Beyond commits:
@@ -433,12 +431,12 @@ the `horizon-start` skill — load it at the start of the session. The essential
   budget, …) and the exact resume command; `recent_failure_reasons` shows
   rate-limit signals. A paused/killed run resumes with
   `"$HORIZON_BIN" run --resume <id>`.
-- **What was in flight?** Read recent ledger history (`project-git` skill:
+- **What was in flight?** Read recent project history (`project-git` skill:
   `git log` + `git show` by `Archon-Session` trailer) and the previous
   session's transcript/report under `.archon-horizon/runs/`. A horizon session
   directory with **no `report.md`** is one that was killed mid-flight.
 - **Is another run live on this workspace?** `"$HORIZON_BIN" ps` lists runs
-  holding a process (the ledger is one shared branch — be aware of parallel
+  holding a process (project branches may have parallel
   writers); it also flags zombie markers and stalled runs. A run registers a
   `runs/<id>/process.json` marker (pid/host) at start and removes it on clean
   exit; `ps` decides liveness by probing the pid on the local host (a marker whose

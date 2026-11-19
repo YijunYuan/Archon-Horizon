@@ -25,7 +25,7 @@ my-horizon-workspace/
 ├── project_b/                    # Another member project
 └── .archon-horizon/              # Managed state and orchestration data
     ├── version                   # Stamped Horizon tool version
-    ├── vcs/                      # Out-of-tree Git repositories for member projects
+    ├── vcs/                      # Legacy workspace Git history (when present)
     ├── roadmap/                  # Milestones and task breakdowns
     ├── inboxes/                  # Local filesystem inbox items
     ├── reports/                  # Structured agent execution reports
@@ -61,28 +61,37 @@ are protected.
 
 ## 3. Managing Projects
 
-Projects represent individual Lean 4 libraries or packages. Horizon supports two integration styles:
+Each member is an independent Lean package and Git checkout. Register one with
+`horizon project add Algebra projects/Algebra`. An existing clone, submodule
+checkout, or linked worktree keeps its Git directory or gitfile, current branch,
+remotes, hooks, and staging area. Horizon initializes an empty Git repository
+inside a member that has none. Registration and run boundaries leave local edits
+and the index in place. Initializing the workspace leaves its root outside Git
+unless you already keep a repository there.
 
-1. **Embedded Subdirectories**: Traditional directories located directly inside the workspace root (e.g., `./my-project/`).
-2. **Out-of-Tree VCS Tracking**: For repositories that should remain isolated without introducing Git submodules, Horizon manages dedicated checkouts inside `.archon-horizon/vcs/<project>.git`.
+### Commits and the dashboard
 
-Project registration and listing are implemented in [`commands/project.py`](../../src/archon_horizon/commands/project.py); config mutations go through [`config/operations.py`](../../src/archon_horizon/config/operations.py).
+Agents commit in each member directory with `"$HORIZON_GIT" commit -m "…" -- <files>`.
+From the workspace root they can use `"$HORIZON_GIT" -C projects/Algebra …`.
+The live dashboard's **Logs → session → Commits** shows the project name, message,
+SHA and file diffs as work proceeds. Project history includes human commits.
+Workspace tasks, reports and session-to-commit references live in `.archon-horizon/`.
 
-### Autogit (out-of-tree history)
+For a 0.1.5 workspace, run `horizon init --update` after installing the new code.
+When a registered project has a valid `.git.disabled/` from that release and
+no `.git`, Horizon restores it. The `.git-disabled/` spelling is also recognized. An existing workspace-root repository and the
+old ledger keep their history. Archived ledger commits remain readable in Logs.
+Restoring a project checkout leaves edits made since it was disabled in its working tree.
 
-Horizon journals its own work **without ever creating a `.git` at the workspace or project root** — see [`vcs/git.py`](../../src/archon_horizon/vcs/git.py). Each repo is a bare git directory driven via explicit `--git-dir`/`--work-tree`: the workspace at `.archon-horizon/vcs/workspace.git`, each VCS-enabled project at `.archon-horizon/vcs/<project>.git`. Your own `<root>/.git`, if any, is untouched and remains the **publish / GitHub** repository.
+### Lake packages
 
-- **Default branch is `main`** (`git init --bare --initial-branch=main`, with a `symbolic-ref` fallback for git < 2.28). It's set **only at creation** — if you manually switch a repo to another branch, autogit keeps committing onto *your* branch; nothing checks out, resets, or pushes.
-- **Excludes live in the git dir's `info/exclude`, not a `.gitignore`** (refreshed on every init, so existing workspaces self-heal). They keep Lean/build artifacts (`.lake/`, `*.olean`, `lake-packages/`), caches, secrets, the **entire** `.archon-horizon/` control-plane tree, and **entire** `**/hgraph/` trees out. Project sources are added *without* `-f`, so binaries and regenerable graphs never sneak in. Users who want state or hgraph history put it in their own root `.git`.
-- **Commits carry rich metadata**: `Run/Round/Role/Session/Task` plus per-project SHAs, authored as the acting agent (`Archon Horizon (Ground|Horizon)`) but committed by the system identity. Provenance is stamped as git trailers by a `prepare-commit-msg` hook.
-- **Ledger vs publish**: agents use `$HORIZON_GIT` → the **source-only** ledger (Lean, blueprints, `config.yaml`). Horizon state and hgraph stay on disk for the live dashboard. Public snapshots go to the user `.git` when you run `horizon dashboard --static` (see [Dashboard & Search](../dashboard-and-search/README.md)). Horizon does **not** mirror every ledger commit into `.git`.
-- **Retro-clean**: older ledgers may still track state/hgraph. Run `horizon ledger status`, then `horizon ledger prune` (optionally `--gc` when no run is mid-commit) to drop those paths from the index without deleting working-tree files.
-
-#### Secret guard (redacts, never blocks)
-
-The `pre-commit` hook installed into every out-of-tree git (`_SECRET_HOOK` in [`vcs/git.py`](../../src/archon_horizon/vcs/git.py)) **redacts** obvious credentials rather than blocking the commit. On a high-confidence, key-prefixed, **case-sensitive** match (e.g. `ghp_…`, `github_pat_…`, `sk-ant-…`, `AKIA…`, `AIza…`, `-----BEGIN … PRIVATE KEY-----`) it replaces the secret with `XXXX` in the staged content, re-stages the file, and warns you to **rotate the real credential** — the commit still proceeds. The case-sensitive, prefixed matching keeps ordinary content (long camelCase identifiers, lowercase base64) untouched. The redaction is best-effort and **fails open**: any error simply warns and lets the commit through, so a guard bug can never wedge your history. Set `ARCHON_HORIZON_ALLOW_SECRETS=1` to skip the scan entirely.
-
-The same hook also carries a separate **silent-clobber guard** that is unchanged and still **blocks**: a commit whose index was seeded from a stale HEAD (or committed through a polluted shared index) would stage deletions the committer never asked for, silently reverting a concurrent session's files — so the hook rejects any commit that stages unexplained tracked-file deletions (override with `ARCHON_HORIZON_ALLOW_DELETIONS=1`).
+Each member owns its `lakefile.toml` or `lakefile.lean`, `lean-toolchain`,
+`lake-manifest.json`, dependencies under `.lake/packages/`, and compiled files under
+`.lake/build/`. Run `horizon check --project Algebra` from the workspace root.
+For `horizon check --lean projects/Algebra/Foo.lean`, the file selects the member.
+Checks on the same project share a lock. Different projects can build independently. Workspace search reads each member’s local
+package checkout. When two members have their own mathlib, use a filter such
+as `horizon search --lib mathlib@Algebra --name NAME` to select a copy.
 
 ### Common Project Commands
 

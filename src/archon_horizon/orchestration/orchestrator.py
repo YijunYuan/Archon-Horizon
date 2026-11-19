@@ -41,11 +41,8 @@ from archon_horizon.store.base import (
     RunStore,
     TaskStore,
 )
-from archon_horizon.vcs.integration import (
-    integrate_workspace_baseline,
-    integrate_workspace_run,
-    integrate_workspace_session,
-)
+from archon_horizon.vcs.integration import project_revisions
+from archon_horizon.vcs.project_git import finish_project_session
 
 from .scheduler import Scheduler
 from .sync import SyncCoordinator
@@ -303,6 +300,9 @@ def _event_summary(event_type: str, data: dict[str, object]) -> str:
             if files:
                 parts.append(files)
             return "; ".join(parts) + "."
+        if "project_commits" in data:
+            count = sum(len(refs) for refs in data["project_commits"].values() if isinstance(refs, list))
+            return f"Recorded {count} project commit(s) for {role} session {session}."
         return f"Integrated {role} session {session}; no workspace changes."
     if event_type == "workspace.run_baseline":
         sha = data.get("sha")
@@ -483,19 +483,6 @@ class Orchestrator:
     def _log_dir(session: SessionLog | None) -> Path | None:
         return session.path if session is not None else None
 
-    def _revision_meta(self) -> dict[str, object]:
-        from archon_horizon.vcs.git import WorkspaceGit, git_available
-
-        if not git_available():
-            return {}
-        workspace_sha = WorkspaceGit(self.workspace.root).current_sha()
-        return {"workspace_sha": workspace_sha} if workspace_sha else {}
-
-    def _write_session_meta(self, session: SessionLog | None, meta: dict[str, object]) -> None:
-        if session is None:
-            return
-        session.write_meta({**meta, **self._revision_meta()})
-
     @staticmethod
     def _agent_harness_metadata(agent: object) -> dict[str, object]:
         """Harness/model/effort descriptor for ``agent`` (harness-backed roles
@@ -519,22 +506,10 @@ class Orchestrator:
         project: str | None = None,
         task_id: str | None = None,
         projects: tuple[str, ...] = (),
-        project_commits: dict[str, str | None] | None = None,
-        project_commit_errors: dict[str, str] | None = None,
     ) -> None:
         if session is None:
             return
-        integration = integrate_workspace_session(
-            self.workspace,
-            run_id=run.id,
-            session=session.name,
-            role=role,
-            round_index=round_index,
-            project=project,
-            task_id=task_id,
-            projects=projects,
-            commit_workspace=True,
-        )
+        project_commits = finish_project_session(self.workspace, session.path)
         self._emit(
             "workspace.session.integrated",
             run_id=run.id,
@@ -542,12 +517,8 @@ class Orchestrator:
             role=role,
             project=project,
             task_id=task_id,
-            projects=list(integration.projects),
-            project_commits=project_commits or {},
-            project_commit_errors=project_commit_errors or {},
-            workspace_commit=integration.workspace_commit,
-            workspace_commit_error=integration.workspace_commit_error,
-            files=list(integration.workspace_files),
+            projects=list(projects),
+            project_commits=project_commits,
         )
 
     # ── context assembly ────────────────────────────────────────────
@@ -873,7 +844,7 @@ class Orchestrator:
             started = utc_now()
             task_projects = self._task_projects(task)
             if session is not None:
-                self._write_session_meta(session, {
+                session.write_meta({
                     "role": "horizon",
                     "round": round_index,
                     "project": task.project,
@@ -966,7 +937,7 @@ class Orchestrator:
                 self.task_store.put(dataclasses.replace(current_task, status=final_status, updated_at=utc_now()))
             self._emit("task.finished", actor="horizon", task_id=task.id, status=final_status)
             if session is not None:
-                self._write_session_meta(session, {
+                session.write_meta({
                     "role": "horizon",
                     "round": round_index,
                     "project": task.project,
@@ -1094,7 +1065,7 @@ class Orchestrator:
         JsonlTranscriptSink(self._open_system.transcript_path).emit(
             TranscriptEvent(TranscriptKind.SESSION_END, data={"ok": True})
         )
-        self._write_session_meta(self._open_system, {"role": "system"})
+        self._open_system.write_meta({"role": "system"})
         self._write_system_report(self._open_system, self._open_system_events)
         self._open_system = None
         self._open_system_events = []
@@ -1310,23 +1281,10 @@ class Orchestrator:
             "run.started", run_id=run.id, rounds=rounds_to_run, dry_run=dry_run,
             resume=resume, resume_from=resume_round if resume else None,
         )
-        if not dry_run and not resume:
-            baseline = integrate_workspace_baseline(
-                self.workspace,
-                run_id=run.id,
-                projects=self._run_scope_projects(run),
-            )
-            if baseline.error:
-                self._emit("workspace.run_baseline.failed", run_id=run.id, error=baseline.error)
-            elif baseline.attempted:
-                self._emit(
-                    "workspace.run_baseline",
-                    run_id=run.id,
-                    sha=baseline.sha,
-                    changed=baseline.changed,
-                    files=list(baseline.files),
-                    projects=list(self._run_scope_projects(run)),
-                )
+        if not dry_run:
+            scoped = self._run_scope_projects(run)
+            revisions = project_revisions(self.workspace, scoped, initialize=True)
+            self._emit("workspace.run_baseline", run_id=run.id, projects=list(scoped), project_heads=revisions)
         reports: list[RoundReport] = []
 
         # Displayed round numbering is offset by ``start_round`` (0 for a normal
@@ -1484,22 +1442,6 @@ class Orchestrator:
         if not dry_run:
             self._archive_consumed_temporaries(run_started)
         self._emit("run.finished", run_id=run.id)
-        if not dry_run:
-            outcome = integrate_workspace_run(
-                self.workspace,
-                run_id=run.id,
-                projects=self._run_scope_projects(run),
-                message=(
-                    f"workspace[{run.id}] run finished\n\n"
-                    f"Run: {run.id}\n"
-                    f"Rounds: {total_rounds}\n"
-                    f"Projects: {', '.join(self._run_scope_projects(run)) or '—'}"
-                ),
-            )
-            if outcome.error:
-                self._emit("workspace.run_integrate.failed", run_id=run.id, error=outcome.error)
-            elif outcome.attempted:
-                self._emit("workspace.run_integrated", run_id=run.id, sha=outcome.sha, changed=outcome.changed)
         self._flush_system_session(runlog)
         self._finalize_system_session()  # close the last system session
         self._collecting = False

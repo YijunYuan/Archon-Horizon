@@ -24,8 +24,7 @@ def resolve_source_roots(root: Path, cfg: WorkspaceConfig) -> dict[str, Path]:
     """Map ``library/project name -> source dir`` for everything to index.
 
     Projects contribute their own tree; external libraries resolve to an
-    explicit ``path``, else the first ``**/.lake/packages/<name>`` found under
-    the workspace. Libraries with no checked-out sources are skipped (with a
+    explicit ``path``, else each registered member's own package checkout. Libraries with no checked-out sources are skipped (with a
     note) since there is nothing to index until ``lake`` has fetched them.
     """
     roots: dict[str, Path] = {}
@@ -36,34 +35,7 @@ def resolve_source_roots(root: Path, cfg: WorkspaceConfig) -> dict[str, Path]:
         if proj.exists():
             roots[name] = proj
 
-    # Package dirs matched case-insensitively by basename. Configured projects'
-    # own ``.lake/packages`` come first: that scan is cheap and deterministic,
-    # and — unlike the recursive glob, which does not follow symlinks — it works
-    # when a project (or its checkout) is symlinked to a shared copy.
-    package_dirs: dict[str, Path] = {}
-
-    def _note(pkg: Path) -> None:
-        if pkg.is_dir():  # follows symlinks: shared checkouts are often links
-            package_dirs.setdefault(pkg.name.lower(), pkg)
-
-    for proj in roots.values():
-        packages = proj / ".lake" / "packages"
-        if packages.is_dir():
-            for pkg in sorted(packages.iterdir()):
-                _note(pkg)
-
-    # Fall back to a whole-workspace sweep only if something is still missing
-    # (a lake project nested below a configured path, say) — it walks every
-    # tree under the root, which is slow on large workspaces.
-    unresolved = any(
-        not (library_package_names(lib.name) & set(package_dirs))
-        for lib in cfg.external_libraries
-        if not lib.path
-    )
-    if unresolved:
-        for pkg in root.glob("**/.lake/packages/*"):
-            _note(pkg)
-
+    projects = dict(roots)
     for lib in cfg.external_libraries:
         if lib.path:
             explicit = Path(lib.path)
@@ -73,10 +45,19 @@ def resolve_source_roots(root: Path, cfg: WorkspaceConfig) -> dict[str, Path]:
             else:
                 log.warn(f"external library {lib.name!r}: path {lib.path!r} does not exist; skipping.")
             continue
-        found = next((package_dirs[n] for n in library_package_names(lib.name) if n in package_dirs), None)
-        if found is not None:
-            roots[lib.name] = found
-        else:
+        aliases = library_package_names(lib.name)
+        copies = {}
+        for name, project in projects.items():
+            packages = project / ".lake" / "packages"
+            if packages.is_dir():
+                match = next((p for p in sorted(packages.iterdir())
+                              if p.name.lower() in aliases and p.is_dir()), None)
+                if match:
+                    copies[name] = match
+        for name, package in copies.items():
+            label = f"{lib.name}@{name}" if len(copies) > 1 else lib.name
+            roots[label] = package
+        if not copies:
             log.info(
                 f"external library {lib.name!r}: no checked-out sources found "
                 f"(expected under .lake/packages); run `lake build` to fetch it, then `horizon search --reindex`."
@@ -103,7 +84,7 @@ def _fingerprint(roots: dict[str, Path]) -> dict:
                 newest = max(newest, path.stat().st_mtime)
             except OSError:
                 continue
-        sig[name] = [count, newest]
+        sig[name] = [str(root.resolve()), count, newest]
     return sig
 
 

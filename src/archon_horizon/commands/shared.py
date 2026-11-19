@@ -191,6 +191,42 @@ def load_workspace(root: Path):
     return cfg, workspace
 
 
+def select_project_root(workspace, project: str | None, cwd: Path) -> Path:
+    import typer
+
+    if project:
+        if project not in workspace.projects:
+            choices = ", ".join(workspace.projects) or "none configured"
+            raise typer.BadParameter(
+                f"unknown project {project!r}; available projects: {choices}",
+                param_hint="--project",
+            )
+        return workspace.project_path(project)
+
+    if len(workspace.projects) == 1:
+        return workspace.project_path(next(iter(workspace.projects)))
+
+    # Agents commonly run inside one project while ARCHON_HORIZON_ROOT points at
+    # the workspace. Resolve that unambiguous project without forcing -p.
+    here = cwd.resolve()
+    containing = []
+    for name in workspace.projects:
+        root = workspace.project_path(name).resolve()
+        try:
+            here.relative_to(root)
+        except ValueError:
+            continue
+        containing.append(root)
+    if containing:
+        return max(containing, key=lambda path: len(path.parts))
+
+    choices = ", ".join(workspace.projects) or "none configured"
+    raise typer.BadParameter(
+        f"select a project with --project; available projects: {choices}",
+        param_hint="--project",
+    )
+
+
 def local_inbox(workspace) -> FilesystemInboxProvider:
     return FilesystemInboxProvider(workspace.state_path / "inbox" / "local")
 

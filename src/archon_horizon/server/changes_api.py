@@ -164,6 +164,7 @@ def session_change_summary(
     project_paths: tuple[str, ...],
     *,
     base: str | None = None,
+    git_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Change summary for the commit ``sha``, scoped to ``project_paths``
     (workspace-relative directory prefixes).
@@ -205,7 +206,7 @@ def session_change_summary(
     if not git_available():
         return _empty("no-git")
 
-    git = WorkspaceGit(root)
+    git = WorkspaceGit(root, git_dir)
     if not git.is_repo():
         return _empty("no-vcs")
 
@@ -246,13 +247,13 @@ def session_change_summary(
 
 
 def session_file_diff(
-    root: Path, sha: str | None, path: str, *, base: str | None = None
+    root: Path, sha: str | None, path: str, *, base: str | None = None, git_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Unified diff of one file at ``sha`` vs its parent (or ``base``), capped
     in size — the click-to-diff behind a commit card."""
     if not git_available() or not sha:
         return {"path": path, "available": False, "diff": ""}
-    git = WorkspaceGit(root)
+    git = WorkspaceGit(root, git_dir)
     if not git.is_repo():
         return {"path": path, "available": False, "diff": ""}
     if base is None:

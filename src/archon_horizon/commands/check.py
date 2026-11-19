@@ -11,12 +11,13 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
 from archon_horizon.log import log
 
-from .shared import emit_json
+from .shared import emit_json, load_workspace, select_project_root
 
 
 def _write_result(root: Path, result: dict[str, object], fingerprint: str) -> None:
@@ -60,43 +61,43 @@ def check(
     ),
     timeout: int = typer.Option(1800, "--timeout", min=1, help="Maximum check time in seconds."),
     as_json: bool = typer.Option(False, "--json", help="Emit the recorded result as JSON."),
+    project: Annotated[str | None, typer.Option("--project", "-p", help="Member project to check.")] = None,
 ) -> None:
-    """Run one Lean check at a time and coalesce identical concurrent checks."""
+    """Run Lake in the selected member project and coalesce identical concurrent checks."""
     root: Path = ctx.obj["root"].resolve()
-    cwd = Path.cwd().resolve()
-    try:
-        cwd.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"Check working directory is outside the workspace: {cwd}") from exc
+    _, workspace = load_workspace(root)
     targets = list(targets or [])
     if lean_file is not None and targets:
         raise ValueError("Pass either lake targets or --lean FILE, not both.")
+    source = lean_file.expanduser().resolve() if lean_file is not None else None
+    cwd = select_project_root(workspace, project, source or Path.cwd()).resolve()
     if lean_file is not None:
-        source = lean_file.expanduser().resolve()
+        if project and not lean_file.is_absolute() and not source.is_file():
+            source = (cwd / lean_file).resolve()
         if not source.is_file():
             raise FileNotFoundError(f"Lean file does not exist: {source}")
-        try:
-            source.relative_to(root)
-        except ValueError as exc:
-            raise ValueError(f"Lean file is outside the workspace: {source}") from exc
+        if not source.is_relative_to(cwd) or select_project_root(workspace, None, source).resolve() != cwd:
+            raise ValueError(f"Lean file is outside the selected project: {source}")
         command = ["lake", "env", "lean", str(source)]
     else:
         command = ["lake", "build", *targets]
+    if not any((cwd / name).is_file() for name in ("lakefile.toml", "lakefile.lean")):
+        raise ValueError(f"No lakefile.toml or lakefile.lean in the selected project: {cwd}")
 
     fingerprint = hashlib.sha256(
         json.dumps({"cwd": str(cwd), "command": command}, sort_keys=True).encode("utf-8")
     ).hexdigest()[:16]
     cache = root / ".archon-horizon" / "cache" / "checks"
     cache.mkdir(parents=True, exist_ok=True)
-    lock_path = cache / "workspace.lock"
+    project_key = hashlib.sha256(os.fsencode(cwd)).hexdigest()[:16]
+    lock_path = cache / f"project-{project_key}.lock"
     requested_at = time.time()
     wait_started = time.monotonic()
     with lock_path.open("a+") as lock:
         try:
             import fcntl
 
-            if fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB) != 0:
-                raise BlockingIOError
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             log.info("Another Horizon Lean check is active; waiting for its resource slot.")
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
@@ -148,7 +149,7 @@ def check(
             "schema_version": 1,
             "fingerprint": fingerprint,
             "command": command,
-            "cwd": cwd.relative_to(root).as_posix() or ".",
+            "cwd": os.path.relpath(cwd, root),
             "status": "timed_out" if timed_out else ("passed" if returncode == 0 else "failed"),
             "ok": returncode == 0,
             "returncode": returncode,
