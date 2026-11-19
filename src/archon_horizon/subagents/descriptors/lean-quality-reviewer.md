@@ -38,7 +38,7 @@ separate from mathematical truth and conceptual API ownership.
 2. Check warnings/linter findings, unused bindings/imports, unnecessary
    `classical`, options, heartbeat or synthesis overrides, and suppressed
    diagnostics. Treat `set_option maxHeartbeats` /
-   `synthInstance.maxHeartbeats` (and kin) as **blockers**, not style nits:
+   `synthInstance.maxHeartbeats` as **blockers**, not style nits:
    run `"$HORIZON_BIN" benchmark -p <project> --details --json` when the scope
    is a module or larger, and rank findings by total budget. Ask whether the
    override papers over instance depth, needless `abbrev` layers, or a bad API.

@@ -2273,7 +2273,7 @@ class WorkspaceService:
         elif action == "gate":
             provider.update_labels(item_id, list(self._labels_for_gate(str(kw["gate"]))), actor)
         elif action == "comment":
-            provider.add_comment(item_id, str(kw["body"]), str(kw.get("author") or "").strip() or None)
+            provider.add_comment(item_id, str(kw["body"]), actor, metadata={"human_reply": True} if provider is self.local else None)
             if provider is self.local:
                 # A dashboard comment is a human action even when its display
                 # author is customized. Keep the human participant acknowledged.

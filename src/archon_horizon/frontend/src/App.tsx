@@ -45,7 +45,7 @@ type HorizonState = {
   workspace: string;
   workspace_root?: string;
   supervisor?: {
-    status: string; sampled_at: string; cpu_percent?: number; available_gib?: number;
+    status: string; delivery?: string; detail?: string; sampled_at: string; cpu_percent?: number; available_gib?: number;
     capacity?: number; active: {run: string; task: string; title: string; project: string}[];
   };
   config_dir?: string;
@@ -230,6 +230,9 @@ function Overview({ state }: PageProps) {
           {state.supervisor.cpu_percent != null && ` · CPU ${state.supervisor.cpu_percent.toFixed(0)}%`}
           {state.supervisor.available_gib != null && ` · ${state.supervisor.available_gib.toFixed(1)} GiB available`}
           {` · ${state.supervisor.active.length} active runs`}</p>
+        {state.supervisor.delivery && <p><strong>{state.supervisor.delivery}</strong>{' · '}{state.supervisor.detail}
+          {state.supervisor.delivery === 'awaiting user' && <> · <Link to="/inbox">Reply in Inbox</Link></>}
+        </p>}
         {state.supervisor.active.map(row => <div key={row.run}>
           <Link to={`/tasks?task=${encodeURIComponent(row.task)}`}>{row.title}</Link>
           {` · ${row.project} · Run ${row.run}`}

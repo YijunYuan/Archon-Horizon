@@ -131,6 +131,7 @@ def build_workspace(cfg: WorkspaceConfig, root: Path) -> Workspace:
             build_command=pc.build_command,
             depends_on=pc.depends_on,
             write_paths=pc.write_paths,
+            max_file_seconds=pc.max_file_seconds,
         )
         for name, pc in cfg.projects.items()
     }

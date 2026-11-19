@@ -56,12 +56,12 @@ CLAUDE_P_INSTALL_HINT = (
 _HORIZON_ATTENTION_HOOK_COMMAND = (
     'ARCHON_HORIZON_NO_SYNC=1 "${HORIZON_BIN:-horizon}" agent-hook-fast'
 )
-# PreToolUse only gates Bash commits (unread conversation pause). PostToolUse is
-# narrowed away from pure-read tools so Read/Grep/Glob do not pay a process spawn.
+# Check compiler flags and proposed edits before writing, and check the Inbox
+# before commits. Pure reads do not need a tool-boundary hook process.
 _HORIZON_ATTENTION_HOOK_EVENTS = (
     ("SessionStart", "startup|resume|clear|compact"),
     ("SubagentStart", None),
-    ("PreToolUse", "Bash"),
+    ("PreToolUse", "Bash|Shell|Exec|exec_command|Edit|Write|MultiEdit|ApplyPatch|ApplyPatchEdit|apply_patch"),
     (
         "PostToolUse",
         "Bash|Edit|Write|MultiEdit|NotebookEdit|ApplyPatch|ApplyPatchEdit|"

@@ -229,12 +229,24 @@ class ProjectConfig:
     freeze_declarations: tuple[str, ...] = ()
     write_paths: tuple[str, ...] = ()
 
+    max_file_seconds: float = 30.0
+
     @classmethod
     def from_raw(cls, name: str, data: dict[str, Any]) -> "ProjectConfig":
         # A project-level vcs block is legacy. Git ownership follows the checkout.
         freeze_raw = data.get("freeze", {})
+        try:
+            value = data.get("quality", {}).get("max_file_seconds", 30)
+            if isinstance(value, bool):
+                raise ValueError("expected seconds")
+            seconds = float(value)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ConfigError(f"{name}: invalid quality.max_file_seconds") from exc
+        if not isfinite(seconds) or seconds <= 0:
+            raise ConfigError(f"{name}: quality.max_file_seconds must be finite and positive")
         return cls(
             name=name,
+            max_file_seconds=seconds,
             path=data["path"],
             type=data.get("type", "lean"),
             blueprint_path=data.get("blueprint", {}).get("path"),

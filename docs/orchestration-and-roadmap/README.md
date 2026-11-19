@@ -50,6 +50,16 @@ Each assignment has its own numbered run, agent process, transcript and project 
 
 The supervisor samples the host and visible Linux cgroup v2 limits. Its admission estimate starts at two cores and up to two GiB per new worker, with a smaller memory allowance on small hosts. It ramps up while work is ready and waits to launch more workers under pressure. Active workers can finish and commit. The supervisor follows newly unlocked assignments until it runs out of ready work. `--rounds` bounds attempts per task during this invocation. Individual runs can be resumed by ID. A service or authentication limit stops further dispatch.
 
+### Final quality review
+
+The supervisor waits for the proof tasks, roadmap prerequisites, blueprint nodes and active workers in its member scope. It then opens a dedicated review task with a fresh engine conversation. The reviewer reads the paper, original objectives, blueprint, public Lean declarations and representative consumers, repairs issues and commits to the owning member. If verification sends work back, the same review task continues, resuming its own conversation when the engine supports it.
+
+The review covers topic-oriented modules, public imports, namespaces, sections and variable scope, canonical instances and downstream inference, proof simplification, and mathematical documentation. Follow the mathlib [documentation](https://mathlib.org/contribute/doc.html), [naming](https://mathlib.org/contribute/naming.html), [style](https://mathlib.org/contribute/style.html) and [commit title and body](https://mathlib.org/contribute/commit.html) conventions. Store session history in the run log. Agent commits are checked using session-scoped Git hooks that delegate to the member’s existing hooks. Preserve both `maxHeartbeats` and `synthInstance.maxHeartbeats` in source, Lake options and compiler invocations.
+
+Horizon captures member source baselines before proof work. It opens Inbox conversations for inherited findings. Reviewers can ask about inherited design issues using `horizon quality ask -p NAME --file PATH --reason TEXT`. Reply in the Dashboard Inbox or with `horizon inbox comment I-0001 --body "..."`, then rerun the supervisor. A reply supplies repair instructions. To explicitly retain the listed pre-existing style or heartbeat findings for a file, enter `keep PATH` on its own line in that thread. The report lists retained findings separately. Proof holes and compilation times above the member limit still block delivery. Existing protected heartbeat settings can be changed by the project owner.
+
+Use `horizon quality check -p NAME --json` to see per-file timings and findings. Final acceptance checks the committed member revision, builds the project and serially elaborates every authored Lean file with its imports prepared. The timed invocation uses `lake lean FILE -- -o TEMP.olean` and includes Lake startup. Installed dependencies under `.lake` are excluded. The Dashboard distinguishes pending proofs, quality review, waiting for a user reply and delivery. Individual focused/manual runs remain useful for development; start `horizon run --supervisor NAME` to deliver the whole member.
+
 ### Dry Runs and Resumption
 - **Dry Run**: Preview the execution plan, target write sets, and harness configuration without launching models:
   ```bash

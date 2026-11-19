@@ -86,9 +86,9 @@ def test_dashboard_tracks_live_and_finished_project_commits(tmp_path: Path) -> N
         _git(project, "add", "证明.lean")
         if name == "A":
             # A normal git invocation inside the session also appears in Logs.
-            _git(project, "commit", "-m", "prove A", "--", "证明.lean", env=env)
+            _git(project, "commit", "-m", "feat: prove A", "--", "证明.lean", env=env)
         else:
-            subprocess.run([env["HORIZON_GIT"], "-C", name, "commit", "-m", "prove B", "--", "证明.lean"],
+            subprocess.run([env["HORIZON_GIT"], "-C", name, "commit", "-m", "feat: prove B", "--", "证明.lean"],
                            cwd=tmp_path, env=env, check=True)
         refs[name] = [_git(project, "rev-parse", "HEAD")]
         assert _git(project, "diff", "--cached", "--name-only") == "private"
@@ -98,7 +98,7 @@ def test_dashboard_tracks_live_and_finished_project_commits(tmp_path: Path) -> N
             assert finish_project_session(service.workspace, session.path) == refs
             _git(tmp_path / "A", "reflog", "expire", "--expire=now", "--all")
         view = service.session_commits_view(run.id, session.name)
-        assert {(c["project"], c["subject"]) for c in view["commits"]} == {("A", "prove A"), ("B", "prove B")}
+        assert {(c["project"], c["subject"]) for c in view["commits"]} == {("A", "feat: prove A"), ("B", "feat: prove B")}
         for row in view["commits"]:
             assert [f["path"] for f in row["files"]] == ["证明.lean"]
             diff = service.session_file_diff(run.id, session.name, "证明.lean", sha=row["sha"], project=row["project"])

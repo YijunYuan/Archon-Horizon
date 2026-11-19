@@ -22,6 +22,7 @@ class Project:
     # tree (e.g. a shared references/ dir) — advisory scope metadata.
     write_paths: tuple[str, ...] = ()
     metadata: Metadata = field(default_factory=dict)
+    max_file_seconds: float = 30.0
 
 
 @dataclass(frozen=True, slots=True)

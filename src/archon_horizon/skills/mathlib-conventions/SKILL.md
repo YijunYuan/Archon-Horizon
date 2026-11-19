@@ -18,11 +18,12 @@ over memory (same map as Palimpsest's mathlib-documentation skill):
 
 | Topic | Upstream |
 |---|---|
-| Naming | https://leanprover-community.github.io/contribute/naming.html |
-| Style | https://leanprover-community.github.io/contribute/style.html |
-| Docstrings / module docs | https://leanprover-community.github.io/contribute/doc.html |
-| PR review checklist | https://leanprover-community.github.io/contribute/pr-review.html |
-| How to contribute | https://leanprover-community.github.io/contribute/how-to-contribute.html |
+| Naming | https://mathlib.org/contribute/naming.html |
+| Style | https://mathlib.org/contribute/style.html |
+| Docstrings / module docs | https://mathlib.org/contribute/doc.html |
+| Agent commit titles and bodies | https://mathlib.org/contribute/commit.html |
+| PR review checklist | https://mathlib.org/contribute/pr-review.html |
+| How to contribute | https://mathlib.org/contribute/how-to-contribute.html |
 
 When local summary and upstream disagree, **follow upstream** and say which
 source you used. Nearby mathlib source under `.lake/packages/mathlib/` is
@@ -30,11 +31,11 @@ evidence for idiomatic spelling and file placement.
 
 ## Naming
 
-- **Theorems / lemmas / `Prop`s → `snake_case`**, named by *what the statement
+- **Theorems / lemmas (proofs of propositions) → `snake_case`**, named by *what the statement
   says*, composing the pieces in order: `add_comm`, `mul_le_mul_left`,
   `isOpen_iUnion`, `continuous_id`. A reader should reconstruct the statement
   from the name.
-- **Types, structures, classes, inductives → `UpperCamelCase`**: `LinearMap`,
+- **Named propositions, types, structures, classes, inductives → `UpperCamelCase`**: `LinearMap`,
   `IsLindelof`, `RiemannianMetric`.
 - **Definitions / terms / functions → `lowerCamelCase`**: `leviCivita`,
   `koszulRHS`, `parallelTransport`.
@@ -61,7 +62,7 @@ Faithful docs beat missing docs; **overclaiming docs are worse than none**.
   project `.bib` when the result is literature-backed.
 - Comments explain *mathematics*, not session history.
 
-Template (advisory):
+Start with the project’s accurate copyright/authorship and license information, then `module`, sorted import groups and the titled module docstring. Use public imports for exported dependencies. Never invent an author or relicense existing files. Module docstring example:
 
 ```lean
 /-!
@@ -85,7 +86,9 @@ Reference: Author, *Title*, Thm. X.Y / §Z.
   flat dump of dozens of files in one folder.
 - One primary mathematical topic per file; split when files grow huge or mix
   unrelated APIs.
-- Namespaces and imports match the path; keep imports minimal.
+- Group namespaces by mathematical API. Use sections for shared hypotheses and the narrowest sensible `variable` scope. Inspect exported signatures for accidentally strengthened assumptions.
+- Register a canonical construction as an instance when consumers should infer it. Test `inferInstance` under the public import. Keep choices that depend on extra data explicit or local.
+- Use `exact` when sufficient and `simpa ... using h` when a single simplification closes the proof. Keep a longer proof when it is clearer or faster.
 - After moves/renames, update consumers and delete empty shells. Writable
   hygiene helpers (`janitor`) may restructure trees; lead agents own API renames.
 

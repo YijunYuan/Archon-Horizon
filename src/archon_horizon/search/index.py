@@ -20,7 +20,7 @@ _DECL_KINDS = (
     "theorem", "lemma", "def", "abbrev", "instance",
     "structure", "class", "inductive", "axiom", "opaque",
 )
-_MODIFIERS = ("private", "protected", "noncomputable", "partial", "unsafe", "nonrec", "scoped", "local")
+_MODIFIERS = ("public", "private", "protected", "noncomputable", "partial", "unsafe", "nonrec", "scoped", "local")
 _DECL_RE = re.compile(
     r"^(?:@\[[^\]]*\]\s*)*"
     r"(?:(?:" + "|".join(_MODIFIERS) + r")\s+)*"

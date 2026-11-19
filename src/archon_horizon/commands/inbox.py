@@ -530,7 +530,10 @@ def comment(
         except ValueError as exc:
             raise typer.BadParameter(str(exc)) from exc
     inbox = _inbox(ctx)
-    inbox.add_comment(id, body, author=author_val, metadata=with_provenance())
+    metadata = with_provenance()
+    if not os.environ.get("ARCHON_HORIZON_AGENT_ROLE") and author_val != "horizon":
+        metadata["human_reply"] = True
+    inbox.add_comment(id, body, author=author_val, metadata=metadata)
     items = inbox.list_items()
     if as_json:
         emit_json(_with_inbox_warnings({"id": id, "commented": True}, items))

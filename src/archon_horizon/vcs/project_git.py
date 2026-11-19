@@ -25,7 +25,19 @@ def session_git_environment(
     if wrapper is not None:
         env["HORIZON_GIT"] = str(wrapper.resolve())
     members = [name for name in projects or workspace.projects if name in workspace.projects]
-    env["HORIZON_PROJECT_ROOTS"] = json.dumps([str(workspace.project_path(n).resolve()) for n in members])
+    from archon_horizon.lean.delivery import prepare_baseline
+    from archon_horizon.vcs.quality_hooks import hook_environment
+
+    lean_roots = []
+    for name in members:
+        if workspace.project(name).type == "lean":
+            prepare_baseline(workspace, name, begin=True)
+            lean_roots.append(str(workspace.project_path(name).resolve()))
+    roots = [str(workspace.project_path(n).resolve()) for n in members]
+    env["HORIZON_PROJECT_ROOTS"] = json.dumps(roots)
+    env["HORIZON_QUALITY_PROJECTS"] = json.dumps(dict(zip(roots, members)))
+    env["HORIZON_QUALITY_ROOT"] = str(workspace.root.resolve())
+    env.update(hook_environment(workspace.state_path, lean_roots))
     if session_dir is not None:
         # Numeric run/session names can also exist in a different workspace's clone.
         key = uuid.uuid4().hex

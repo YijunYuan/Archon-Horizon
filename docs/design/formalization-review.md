@@ -173,7 +173,7 @@ scoped interpretation.
 
 ## Free-agent boundary
 
-There is no runtime review gate and no automatic semantic-review dispatch. The
+During a proof run, the choice of specialized advisory reviewers remains with the worker. Supervised final delivery adds an independent writable review and machine checks as described in the [quality workflow](../orchestration-and-roadmap/README.md#final-quality-review). The
 Horizon skill presents risk-triggered options, while the subagent skill says
 explicitly that the roster is a set of choices. An agent may skip, combine, or
 replace a review and may create a workspace-specific helper; it should record

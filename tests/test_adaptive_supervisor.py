@@ -30,6 +30,9 @@ def test_parallel_proofs_unlock_a_new_run(tmp_path, monkeypatch):
 import os, time, subprocess
 from pathlib import Path
 env = os.environ
+if env['ARCHON_HORIZON_TASK'].startswith('review-'):
+    subprocess.run([str(Path(__import__('sys').executable).with_name('horizon')), 'task', 'set', env['ARCHON_HORIZON_TASK'], '--status', 'done'], check=True)
+    raise SystemExit()
 name = env['ARCHON_HORIZON_TASK_TITLE'].split(':')[-1]
 root = Path(env['ARCHON_HORIZON_ROOT'])
 (root / (name + '.start')).write_text(str(time.monotonic()))
@@ -37,17 +40,24 @@ time.sleep(0.7 if name == 'left' else 1.2)
 p = Path(name + '.lean')
 p.write_text(p.read_text().replace('sorry', 'trivial'))
 subprocess.run([env['HORIZON_GIT'], 'add', p.name], check=True)
-subprocess.run([env['HORIZON_GIT'], 'commit', '-m', name], check=True)
+subprocess.run([env['HORIZON_GIT'], 'commit', '-m', 'feat: prove ' + name], check=True)
 (root / (name + '.end')).write_text(str(time.monotonic()))
 print('Verified ' + name)
 """)
     project = workspace(tmp_path, {"kind": "command", "command": sys.executable, "args": [str(agent)]})
+    # This harness tests scheduling; the real Lake protocol is exercised separately.
+    import os
+    lake = tmp_path / "lake"
+    lake.write_text("#!/bin/sh\nexit 0\n")
+    lake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    (project / "lakefile.toml").write_text('name = "math"\n')
     blueprint = project / "blueprint" / "src"
     blueprint.mkdir(parents=True)
     names = ("left", "right", "conclusion")
     statements = []
     for name in names:
-        (project / f"{name}.lean").write_text(f"theorem {name} : True := by sorry\n")
+        (project / f"{name}.lean").write_text(f"/- Copyright (c) Test. -/\nmodule\n/-! # Test -/\npublic theorem {name} : True := by sorry\n")
         deps = r"\uses{thm:left, thm:right}" if name == "conclusion" else ""
         statements.append(r"\begin{theorem}\label{thm:" + name + r"}\lean{" + name + r"}\leanok " + deps
                           + r"True.\end{theorem}")
@@ -73,7 +83,7 @@ print('Verified ' + name)
     monkeypatch.setattr(supervisor, "sample_resources", sample)
     result = supervisor.supervise(orch, cfg, {"math"}, set(), rounds=1, dry_run=False)
     assert result["exit_code"] == 0
-    assert len({r["run"] for r in result["runs"]}) == 3
+    assert len({r["run"] for r in result["runs"]}) == 4
     assert {s["status"] for s in seen} >= {"waiting for CPU", "waiting for memory"}
     assert all(not s["active"] for s in seen if s["status"].startswith("waiting"))
     assert any(len(s["active"]) == 2 for s in seen)
@@ -84,8 +94,9 @@ print('Verified ' + name)
     for run in result["runs"]:
         directory = orch.run_logs.get(run["run"]).path
         data, = directory.glob("sessions/*-horizon-*/project-git.json")
-        assert len(json.loads(data.read_text())["commits"]["math"]) == 1
-    assert json.loads(status.read_text())["status"] == "finished"
+        commits = json.loads(data.read_text())["commits"].get("math", [])
+        assert len(commits) == (0 if run["task"].startswith("review-") else 1)
+    assert json.loads(status.read_text())["delivery"] == "delivered"
     staged = subprocess.check_output(["git", "-C", str(project), "diff", "--cached", "--name-only"], text=True)
     assert staged.strip() == "unrelated.txt"
     assert not (tmp_path / ".git").exists()

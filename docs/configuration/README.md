@@ -256,3 +256,8 @@ vision-capable model and effort. Model selection is deliberately not encoded in
 ---
 
 Secrets (API keys, tokens) belong in the workspace-root `.env` file, not `config.yaml` — see [`config/env.py`](../../src/archon_horizon/config/env.py). `horizon init` scaffolds a template `.env` for you.
+
+
+### Per-project delivery time limit
+
+Set `projects.<name>.quality.max_file_seconds` to a finite positive number (default `30`). This is the wall-clock budget for each authored Lean source in that member after preparing imports. The supervisor records the individual measurements and verifies the final revision.

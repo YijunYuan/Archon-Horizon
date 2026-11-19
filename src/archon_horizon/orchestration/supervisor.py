@@ -9,9 +9,11 @@ import socket
 import subprocess
 import sys
 import time
+import threading
+from contextlib import contextmanager
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, wait
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import psutil
@@ -30,6 +32,7 @@ from archon_horizon.core.atomic import write_text_atomic
 
 from .orchestrator import Orchestrator
 from .planning import assignments
+from .quality_review import QualityReview
 from .resources import Resources, sample_resources
 from .scheduler import write_sets_conflict
 
@@ -124,10 +127,33 @@ def _snapshot(status, resources, config, workers, slots=0):
             "pid": os.getpid(), "host": socket.gethostname()}
 
 
+@contextmanager
+def _monitor_delivery(path, config, enabled):
+    """Keep sampling while the main thread owns interruptible Lake processes."""
+    if not enabled:
+        yield
+        return
+    stop = threading.Event()
+
+    def sample():
+        while not stop.wait(config.poll_seconds):
+            data = _snapshot("verifying delivery", sample_resources(), config, {})
+            write_text_atomic(path, json.dumps(data))
+
+    thread = threading.Thread(target=sample, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
+
+
 def _choose(orch, options, attempts, paused_tasks, occupied, rounds, limit):
     selected = []
     for task in sorted(options, key=lambda t: attempts[t.id]):
-        if attempts[task.id] >= rounds or task.id in paused_tasks:
+        allowance = max(2, rounds) if task.metadata.get("supervisor_source") == "quality" else rounds
+        if attempts[task.id] >= allowance or task.id in paused_tasks:
             continue
         claim = task_claim(orch.workspace, task)
         if any(write_sets_conflict(claim, other) for other in occupied):
@@ -144,7 +170,10 @@ def _admit(orch, task, resources):
         current = orch.task_store.get(task.id)
     except FileNotFoundError:
         current = None
-    if current and current.status is not TaskStatus.QUEUED:
+    if current and task.metadata.get("supervisor_source") == "quality":
+        task = replace(task, created_at=current.created_at)
+        orch.task_store.put(task)
+    elif current and current.status is not TaskStatus.QUEUED:
         return None
     if current is None or (task.metadata.get("supervisor_source") and
                            (current.write_set != task.write_set or current.objective != task.objective)):
@@ -166,6 +195,8 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
     snapshot = {}
     options = []
     scanned = projects | {t.project for t in orch.task_store.list() if t.id in ids and t.project in orch.workspace.projects}
+    review = QualityReview(orch, projects, ids, dry_run)
+    scanned.update(review.names)
     old_term = signal.getsignal(signal.SIGTERM)
 
     def interrupt(signum, frame):
@@ -208,11 +239,31 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
             occupied = external + [task_claim(orch.workspace, w.task) for w in workers.values()]
             candidates = []
             options = []
+            waiting_for_check = False
             if not halt:
                 options = assignments(orch, projects, ids, dags, create=create_tasks,
                                       active=[w.task for w in workers.values()])
+                proof_options = options
+                if review.reviewing:
+                    # A temporarily open node during review belongs to the reviewer.
+                    # A new explicitly queued proof task can still restart proof work.
+                    options = [t for t in options if not t.metadata.get("supervisor_source")]
                 limit = max(1, slots)
                 candidates = _choose(orch, options, attempts, paused_tasks, occupied, rounds, limit)
+
+                if not candidates and not options and not workers and not external and create_tasks:
+                    with _monitor_delivery(status_file, config, not dry_run and slots > 0):
+                        review_task = review.next_task(dags, measure=slots > 0)
+                    if review_task and not dry_run:
+                        resources = sample_resources()
+                        slots = min(slots, resources.admissions(config, 0))
+                    waiting_for_check = bool(review_task and slots == 0)
+                    if review_task:
+                        options = [review_task]
+                        candidates = _choose(orch, options, attempts, paused_tasks, occupied, rounds, 1)
+                    elif proof_options and not review.reviewing:
+                        options = proof_options
+                        candidates = _choose(orch, options, attempts, paused_tasks, occupied, rounds, limit)
 
             if dry_run:
                 return {"dry_run": True, "resources": asdict(resources), "admissions": slots,
@@ -225,10 +276,15 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
                     continue
                 run_id, worker = admitted
                 workers[run_id] = worker
+                if task.metadata.get("supervisor_source") == "quality":
+                    review.record["run"] = run_id
+                    review.publish("quality review", review.detail)
                 attempts[task.id] += 1
                 started.append({"run": run_id, "task": task.id, "title": task.title, "project": task.project})
 
-            mode = "running"
+            mode = review.status or "running"
+            if any(w.task.metadata.get("supervisor_source") != "quality" for w in workers.values()):
+                mode = "running"
             if candidates and slots == 0:
                 if resources.cpu_percent >= config.max_cpu_percent:
                     mode = "waiting for CPU"
@@ -242,11 +298,19 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
                 log.info(f"Supervisor {mode} ({resources.cpu_percent:.0f}% CPU, {resources.available_gib:.1f} GiB available)")
                 previous_status = mode
             snapshot = _snapshot(mode, resources, config, workers, slots)
+            if review.status:
+                snapshot.update(delivery=review.status, detail=review.detail)
             write_text_atomic(status_file, json.dumps(snapshot))
             externally_blocked = any(attempts[t.id] < rounds and t.id not in paused_tasks and
                                      any(write_sets_conflict(task_claim(orch.workspace, t), c) for c in external)
                                      for t in options)
-            if not workers and not candidates and not externally_blocked:
+            if external and review.names:
+                scope = task_claim(orch.workspace, HorizonTask("delivery", review.names[0], "", projects=tuple(review.names)))
+                externally_blocked |= any(write_sets_conflict(scope, claim) for claim in external)
+            if not workers and not candidates and not externally_blocked and not waiting_for_check:
+                if not halt and review.status in ("quality review", "awaiting user", "proofs pending"):
+                    exit_code = 3
+                    log.warn(review.detail or "Quality review requires follow-up")
                 break
             time.sleep(config.poll_seconds)
     finally:
@@ -259,7 +323,7 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
             exhausted = any(attempts[t.id] >= rounds for t in options)
             reason = "task attempts exhausted" if exhausted else "no ready work"
             snapshot.update(status=status, active=[], admissions=0, sampled_at=utc_now().isoformat(),
-                            reason=reason if status == "finished" else status)
+                            reason=review.detail or (reason if status == "finished" else status))
             write_text_atomic(status_file, json.dumps(snapshot))
     return {"dry_run": False, "runs": started, "reason": snapshot["reason"], "exit_code": exit_code}
 

@@ -653,9 +653,22 @@ def hook_response(root: Path, payload: dict[str, Any]) -> dict[str, Any] | None:
     # commit or report command cannot wedge the session forever.
     if event == "Stop" and bool(payload.get("stop_hook_active")):
         return None
-    # PreToolUse is registered on all Bash only because the engine matcher is
-    # tool-name scoped. Non-commit Bash has nothing to gate — exit before any
-    # inbox/state I/O so the common shell path is essentially free.
+    # Handle compiler flags before the common shell path returns without any inbox I/O.
+    if event == "PreToolUse":
+        from archon_horizon.lean.quality import changes_protected_setting
+
+        data = payload.get("tool_input") or {}
+        tool = str(payload.get("tool_name") or "").rsplit(".", 1)[-1].lower()
+        command = (data.get("command") or data.get("cmd")) if isinstance(data, dict) else None
+        override = isinstance(command, str) and re.search(
+            r"(?:^|[;&|]\s*|\s)(?:[^\s;|&]*/)?(?:lean|lake)\s+[^;&|\n]*?"
+            r"(?:-D\s*(?:synthInstance\.maxHeartbeats|maxHeartbeats)\s*=|-T\s*\d|--timeout[=\s]+\d)", command
+        )
+        if override or (isinstance(data, (dict, str)) and changes_protected_setting(tool, data, Path(payload.get("cwd") or root))):
+            return {"hookSpecificOutput": {
+                "hookEventName": event, "permissionDecision": "deny",
+                "permissionDecisionReason": "Preserve the project's heartbeat settings. Profile and repair the slow declaration.",
+            }}
     if event == "PreToolUse" and not _is_commit_tool(payload):
         return None
     state_path = _state_path(root, payload)

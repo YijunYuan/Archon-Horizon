@@ -12,11 +12,13 @@ Inspect `git status --short` and `git diff --cached` before editing. Leave pre-e
 ```bash
 "$HORIZON_GIT" status --short
 "$HORIZON_GIT" add -- Chapter/NewLemma.lean
-"$HORIZON_GIT" commit -m "Prove the compactness lemma" \
+"$HORIZON_GIT" commit -m "feat(Topology): prove the compactness lemma" \
   --trailer 'Summary=Discharged the compactness step used by the next chapter.' \
   -- Chapter/NewLemma.lean
 "$HORIZON_GIT" show --stat HEAD
 ```
+
+Use the mathlib PR title and description conventions for every agent commit (https://mathlib.org/contribute/commit.html). Describe the mathematical change. Put run history in the session report.
 
 The session wrapper adds run, session, role, and task trailers. The live dashboard reads each commit and its parent from this checkout. Independently verified changes can appear as separate checkpoints during a long run. A failed or interrupted attempt can be saved with `horizon attempt save` in the session artifacts.
 

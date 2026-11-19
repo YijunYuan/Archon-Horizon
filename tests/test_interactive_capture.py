@@ -315,7 +315,7 @@ def test_interactive_run_tags_and_integrates_agent_commits(
             check=True,
         )
         subprocess.run(
-            [actual.env["HORIZON_GIT"], "commit", "-m", "Prove the interactive demo"],
+            [actual.env["HORIZON_GIT"], "commit", "-m", "feat: prove the interactive demo"],
             cwd=cwd,
             env=actual.env,
             check=True,
@@ -337,9 +337,9 @@ def test_interactive_run_tags_and_integrates_agent_commits(
     service = WorkspaceService(workspace)
     view = service.session_commits_view("0001", "0001-horizon-interactive")
     by_subject = {row["subject"]: row for row in view["commits"]}
-    assert by_subject["Prove the interactive demo"]["kind"] == "agent"
+    assert by_subject["feat: prove the interactive demo"]["kind"] == "agent"
     session_meta = service.stores.run_logs.get("0001").sessions()[0].read_meta()
-    assert session_meta["project_commits"]["proj"] == [by_subject["Prove the interactive demo"]["sha"]]
+    assert session_meta["project_commits"]["proj"] == [by_subject["feat: prove the interactive demo"]["sha"]]
     report = service.report(
         ".archon-horizon/runs/0001/sessions/0001-horizon-interactive/transcript.jsonl"
     )

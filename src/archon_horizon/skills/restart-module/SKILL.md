@@ -63,8 +63,7 @@ Do **not** restart a small, isolated lemma that only needs a correct proof.
    - Prefer inline types over one-off `abbrev` wrappers that force equivalence
      boilerplate.
    - Keep instance and morphism packaging shallow; one bundling layer beats three.
-   - No new `set_option maxHeartbeats` unless a **measured** obligation remains
-     after the redesign; treat remaining overrides as debt to file.
+   - Preserve `maxHeartbeats` and `synthInstance.maxHeartbeats` in sources, Lake configuration and compiler flags. Redesign slow declarations. Ask the user about inherited overrides.
 4. Point imports at the new surface; delete or stop exporting the old names.
 5. Verify with [[lean-check]] (LSP loop, then `"$HORIZON_BIN" check`).
 6. **Drop backups** once the new module builds and consumers are updated —

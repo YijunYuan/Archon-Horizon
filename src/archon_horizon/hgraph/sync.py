@@ -97,7 +97,7 @@ LEAN_KINDS = {
 _EDGE_RANK = {"uses": 2, "formalizes": 1}
 _DECL_RE = re.compile(
     r"^\s*(?:@\[[^\]]*\]\s*)?"                      # optional attribute
-    r"(?:private\s+|protected\s+|noncomputable\s+)*"
+    r"(?:(?:public|private|protected|noncomputable|nonrec|unsafe|partial|scoped|local)\s+)*"
     r"(theorem|lemma|def|abbrev|instance|structure|class|inductive)\s+"
     # Lean identifiers may contain Unicode letters and symbols.  Stop at the
     # punctuation that starts a declaration's binders/type/body instead of

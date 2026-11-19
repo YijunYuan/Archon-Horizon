@@ -321,6 +321,7 @@ specific file, or every call site of a name you already have.
   Put Lean implementation notes, failed tactics, and declaration-specific
   progress on the corresponding hgraph node with `graph add comment`; do not
   insert "Formalization note" paragraphs into blueprint `.tex` files.
+- Preserve `maxHeartbeats` and `synthInstance.maxHeartbeats` everywhere. Use `horizon quality ask -p PROJECT --file PATH --reason TEXT` before fixing an inherited quality issue. Keep run history in session reports.
 - Write Lean in mathlib style (naming, module docs, tree layout). Skill:
   `mathlib-conventions`. Rank costly files with
   `"$HORIZON_BIN" benchmark [-p <project>] --json` (sum of `set_option`

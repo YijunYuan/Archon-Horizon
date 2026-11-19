@@ -24,7 +24,7 @@ composition, not about making a weak statement compile.
   `"$HORIZON_BIN" benchmark -p <project> --details --json` (or the dashboard
   Benchmark view) to rank files by total raised budgets. High ranks usually
   mean deep instance search, needless `abbrev` layers, or bad abstraction —
-  not a reason to raise the limit further without a redesign note.
+  preserve both heartbeat settings while repairing the underlying proof or API.
 - Check names, namespaces, **module placement / tree shape**, docstrings
   ([[mathlib-conventions]]), cross-references, deprecations, attributes, and
   line/resource hygiene.

@@ -199,6 +199,8 @@ class HarnessHorizonAgent(HorizonAgent):
         # Continue the native session only if the engine supports it; otherwise
         # re-run fresh with the full prompt (the engine-agnostic fallback).
         resume = context.resume_session_id if _supports_resume(self._harness) else None
+        if context.task.metadata.get("supervisor_source") == "quality" and _supports_resume(self._harness):
+            resume = resume or context.task.metadata.get("quality_session_id")
         full_prompt = self._compose(context)
         env = _agent_env("horizon", context)
         scratch_dir = env.get("ARCHON_HORIZON_TMP")

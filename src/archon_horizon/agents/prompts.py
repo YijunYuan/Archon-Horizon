@@ -77,6 +77,21 @@ def _stale_skill_guard(context: HorizonContext) -> str:
 
 def horizon_task_prompt(context: HorizonContext) -> str:
     """Prompt for one automated Horizon session: directive + skill pointer."""
+    if context.task.metadata.get("supervisor_source") == "quality":
+        return (
+            "You own the final independent quality review and repairs. Begin from the paper, original goals, "
+            "blueprint, source and public consumers. Prior solver transcripts are unnecessary. Read current "
+            "protections and human replies. Compare inherited issues against the quality baseline before editing. "
+            "Follow https://mathlib.org/contribute/doc.html, https://mathlib.org/contribute/naming.html, "
+            "https://mathlib.org/contribute/style.html and https://mathlib.org/contribute/commit.html. "
+            "Inspect topic directories, module headers/import visibility, namespaces, sections and variable scope. "
+            "Test canonical instances from a downstream import with inferInstance; keep noncanonical choices scoped. "
+            "Simplify redundant proofs (including simpa using where appropriate), keep mathematical docs and remove "
+            "session history from Lean. Preserve theorem strength and verify all downstream consumers. "
+            "Never change maxHeartbeats or synthInstance.maxHeartbeats or the delivery time limit. "
+            "Respect frozen files and existing user edits. Commit verified repairs with $HORIZON_GIT. "
+            "Record your conclusions and evidence, and set your own task status explicitly.\n\n" + _task_block(context)
+        )
     skill_path = (
         context.workspace.root / ".claude" / "skills" / "horizon" / "SKILL.md"
     ).resolve()
@@ -89,12 +104,12 @@ def horizon_task_prompt(context: HorizonContext) -> str:
         "Before modifying files, inspect the required and conversational inbox lanes:\n"
         "`\"$HORIZON_BIN\" inbox list --mine --status open --kind protection --json`\n"
         "then `\"$HORIZON_BIN\" inbox list --mine --unread --kind conversation --json`.\n"
-        "Protections are standing constraints even when already read. Address or explicitly\n"
-        "acknowledge unread conversations before ordinary advisory inbox material.\n\n"
+        "Honor standing protections and answer unread conversations first.\n\n"
         "# Task\n"
         f"{_task_block(context)}\n\n"
-        "Run Lake and commit from each owning project directory. Use `$HORIZON_GIT` "
-        "with explicit file paths for proof commits.\n\n"
+        "Follow mathlib-conventions. Preserve maxHeartbeats and synthInstance.maxHeartbeats. "
+        "Reuse topic modules, test inferred instances from a consumer, and run Lake in the owning project. "
+        "Commit with `$HORIZON_GIT` and a mathlib title.\n\n"
         "This is a headless, one-shot session: advance the REAL objective, commit each\n"
         "verified unit and any final edits, keep operational comments to the delta.\n"
         "Before the final report, for any new certificate/context wrapper,\n"

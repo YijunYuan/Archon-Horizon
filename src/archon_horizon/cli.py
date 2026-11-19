@@ -18,6 +18,7 @@ from typer.main import get_command
 from archon_horizon import __version__
 from archon_horizon.commands import blueprint as blueprint_cmd
 from archon_horizon.commands import check as check_cmd
+from archon_horizon.commands import quality as quality_cmd
 from archon_horizon.commands import agent_hook as agent_hook_cmd
 from archon_horizon.commands import attempt as attempt_cmd
 from archon_horizon.commands import benchmark as benchmark_cmd
@@ -165,6 +166,7 @@ app.command("sync")(sync_cmd.sync)
 app.add_typer(tmp_cmd.app, name="tmp")
 app.command("usage")(usage_cmd.usage)
 app.command("check")(check_cmd.check)
+app.add_typer(quality_cmd.app, name="quality")
 app.add_typer(benchmark_cmd.app, name="benchmark")
 app.command("permissions")(permissions_cmd.permissions)
 app.command("ps")(ps_cmd.ps)

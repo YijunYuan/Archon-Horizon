@@ -57,7 +57,7 @@ def _proof_tasks(workspace: Workspace, project: str, dag: dict | None, in_progre
             title = f"Establish the blueprint for {project}"
             objective = ("Read the assigned objectives and project sources. Write a source-facing blueprint "
                          "with labelled statements, proofs and dependencies. Prepare independent proof "
-                         "assignments for the scheduler: give them separate Lean modules and file-scoped "
+                         "assignments by mathematical topic. Inspect existing modules and their consumers first. Reuse a module for related lemmas, group shared APIs and hypotheses, and record file-scoped "
                          "roadmap items (`horizon roadmap add --file … --blueprint-node … --depends-on …`) or link "
                          "their declarations in the blueprint. Include required "
                          "interfaces and list dependencies. Leave substantial proofs to the assigned workers.")
@@ -73,7 +73,7 @@ def _file_plan(project: str, proofs: list[HorizonTask]) -> HorizonTask:
         "The following independent blueprint targets have no assigned Lean files: "
         + ", ".join(labels) + ". Inspect the project layout and record file-scoped roadmap "
         "items using --file and --blueprint-node. Group statements that belong in the same "
-        "module and record any dependencies. Leave the proofs to the assigned workers."
+        "module. Prefer an existing topic directory and record the public API, a downstream use, and dependencies. Leave the proofs to the assigned workers."
     )
     return HorizonTask(id=_derived_id(project, "plan", "\n".join(labels)), project=project, projects=(project,),
                        title=f"Assign modules to ready proofs in {project}", objective=objective,
@@ -83,7 +83,8 @@ def _file_plan(project: str, proofs: list[HorizonTask]) -> HorizonTask:
 
 def assignments(orch: Orchestrator, projects: set[str], ids: set[str], dags: dict, *, create: bool = True, active=()):
     """Return proposed tasks. Nothing is stored until the controller admits a run."""
-    tasks = {t.id: t for t in orch.task_store.list()}
+    # Only the delivery controller may admit a reviewer at the closed proof frontier.
+    tasks = {t.id: t for t in orch.task_store.list() if t.metadata.get("supervisor_source") != "quality"}
     roadmap = {r.id: r for r in orch.roadmap_store.load().items}
     # An explicitly selected milestone includes its subtree and prerequisites.
     # Recompute it on refresh because the planning worker can add new items.
