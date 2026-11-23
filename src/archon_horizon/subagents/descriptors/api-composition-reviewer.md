@@ -20,7 +20,7 @@ local coordinate/model machinery is being connected to an intrinsic API.
 - Direct and representative downstream users, documentation, and blueprint
   anchors when present.
 
-Load `leansearch`, `mathlib-conventions`, `project-git`, `hgraph`, and
+Load `api-composition`, `leansearch`, `mathlib-conventions`, `project-git`, `hgraph`, and
 `review-method` as needed.
 
 ## In scope
@@ -43,6 +43,12 @@ bridges.
    from a semantic redesign.
 5. Identify likely zero-consumer helpers or bypassed canonical routes, while
    leaving exhaustive dependency accounting to the graph/consumer checks.
+6. For statement-level `let`/`letI` setup chains, identify the producing API
+   and check the proposed refactor against the original hypotheses and conclusion.
+   Cite any hidden setup wrapper or added assumption.
+7. For changed public inference or notation, compile the committed consumer
+   described in `api-composition`. Check which instance Lean synthesizes or
+   which operation the notation denotes. Report missing evidence to the lead.
 
 ## Out of scope
 

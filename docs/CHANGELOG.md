@@ -9,6 +9,10 @@ minor releases; `horizon init --update` migrates a workspace's managed files.
 
 ## [Unreleased]
 
+- Lean API review checks declaration choices against downstream mathematical use and
+  requires a compiled public-import example for new or changed inference and notation.
+  Repeated `let` and `letI` setup in exported theorem statements blocks delivery until
+  refactored. The supervisor reopens reviews signed off under the previous criteria.
 - Final delivery verifies the Git revisions recorded when the reviewer marked
   the review done. A later commit requires another review before delivery.
   The next supervised run rechecks older deliveries that lack this record.

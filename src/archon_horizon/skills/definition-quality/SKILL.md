@@ -68,6 +68,7 @@ Treat these as **definition suspects**, especially on core API:
 | Fields/hypotheses unused by any consumer | Scaffold / target-shaped packaging ([[load-bearing]]) |
 | Unfolds to something proofs cannot use | Manual `change`/`congr`/`cast` everywhere |
 | Instance that reconstructs context each time | `synthInstance.maxHeartbeats`; fragile typeclass search |
+| A theorem type builds a chain of local definitions or instances | Callers must reconstruct the setup to state or apply the result. Trace the missing API using [[api-composition]]. |
 | Name/path that hides the math claim | Unsearchable; wrong generality |
 
 Static cost signal: `"$HORIZON_BIN" benchmark -p <project> --json` on modules

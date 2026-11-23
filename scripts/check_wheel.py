@@ -23,6 +23,8 @@ REQUIRED = [
     ("bundled skills", lambda n: n.startswith("archon_horizon/skills/") and n.endswith(".md")),
     ("subagent descriptors", lambda n: "/subagents/" in n and n.endswith(".md")),
     ("hgraph docs", lambda n: n.startswith("archon_horizon/hgraph/") and n.endswith(".md")),
+    ("Lean signature checker", lambda n: n == "archon_horizon/lean/SignatureReview.lean"),
+    ("Lean project configuration probe", lambda n: n == "archon_horizon/lean/ReviewConfig.lean"),
     ("built dashboard assets", lambda n: n.startswith("archon_horizon/frontend/dist/")),
     ("dashboard entry point", lambda n: n == "archon_horizon/frontend/dist/index.html"),
 ]

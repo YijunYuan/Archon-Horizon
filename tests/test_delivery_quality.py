@@ -16,8 +16,9 @@ from archon_horizon.core.tasks import HorizonTask, TaskStatus
 from archon_horizon.inboxes.filesystem import FilesystemInboxProvider
 from archon_horizon.lean import delivery
 from archon_horizon.lean.quality import protected_settings
+from archon_horizon.lean.signatures import SignatureFinding
 from archon_horizon.orchestration import supervisor
-from archon_horizon.orchestration.quality_review import QualityReview
+from archon_horizon.orchestration.quality_review import QualityReview, _digest
 from archon_horizon.orchestration.resources import Resources
 from archon_horizon.vcs.project_git import session_git_environment
 
@@ -207,6 +208,58 @@ def test_retention_is_specific_to_an_inherited_finding_and_never_waives_timing(t
     assert not delivery.check_project(ws, "m")["ok"]
 
 
+@pytest.mark.parametrize("baseline_kind", ["uncommitted", "legacy-committed"])
+def test_statement_setup_requires_repair_and_tracks_the_original_statement(tmp_path, monkeypatch, baseline_kind):
+    orch, member = fixture(tmp_path, monkeypatch)
+    ws = orch.workspace
+    file = member / "M.lean"
+    header = "theorem legacy :\n    let a := 1; let b := a; let c := b; c = 1"
+    new_header = header.replace("legacy", "added")
+    file.write_bytes((HEADER + "public " + header + " := rfl\n").replace("\n", "\r\n").encode())
+    if baseline_kind == "legacy-committed":
+        git(member, "commit", "-qam", "existing theorem").check_returncode()
+        delivery.save(delivery.directory(ws, "m") / "baseline.json",
+                      {"head": delivery.head(member), "files": delivery.inspect(member)})
+    else:
+        delivery.baseline(ws, "m")
+    file.write_text(file.read_text().replace(":= rfl\n", ":= by rfl\n") + "public " + new_header + " := rfl\n")
+
+    def scan(root, path, *, per_file_seconds):
+        assert root == member and path == "M.lean" and per_file_seconds == 30
+        return [SignatureFinding(f"refactor {h.split()[1]}", h, line)
+                for h, line in ((header, 6), (new_header, 8)) if h in file.read_text()]
+
+    monkeypatch.setattr(delivery, "signature_findings", scan)
+    report = delivery.check_project(ws, "m")
+    inherited, added = report["issues"]
+    assert "inbox" in inherited and "inbox" not in added
+    assert (inherited["line"], added["line"]) == (6, 8)
+    box = FilesystemInboxProvider(ws.state_path / "inbox/local")
+    box.add_comment(inherited["inbox"], "keep M.lean", author="human")
+    report = delivery.check_project(ws, "m")
+    assert not report["ok"] and len(report["issues"]) == 2 and not report["retained"]
+    file.write_text(HEADER + "public theorem legacy : 1 = 1 := rfl\n")
+    assert delivery.check_project(ws, "m")["ok"]
+
+
+def test_signature_checker_failure_identifies_the_file_and_keeps_checking(tmp_path, monkeypatch):
+    orch, member = fixture(tmp_path, monkeypatch)
+    (member / "Other.lean").write_text(HEADER)
+
+    def scan(root, path, *, per_file_seconds):
+        if path == "M.lean":
+            raise delivery.SignatureCheckError("invalid native report")
+        return [SignatureFinding("refactor Other.example_ok", "theorem example_ok : True", 6)]
+
+    monkeypatch.setattr(delivery, "signature_findings", scan)
+    report = delivery.check_project(orch.workspace, "m")
+    assert not report["ok"]
+    assert [(i["file"], i["reason"]) for i in report["issues"]] == [
+        ("M.lean", "Lean signature review failed: invalid native report"),
+        ("Other.lean", "refactor Other.example_ok"),
+    ]
+
+
 @pytest.mark.parametrize("action", ["status", "edit"])
 def test_delivery_requires_the_reviewed_revision_of_every_member(tmp_path, monkeypatch, action):
     _, member = fixture(tmp_path, monkeypatch)
@@ -267,3 +320,28 @@ def test_legacy_receipt_requires_semantic_review_and_dirty_sources_cannot_be_sig
     git(member, "restore", "M.lean").check_returncode()
     assert main(cli) == 0
     assert resumed.next_task(dag) is None and resumed.status == "delivered"
+
+
+def test_delivery_from_before_public_api_checks_needs_a_fresh_review(tmp_path, monkeypatch):
+    orch, member = fixture(tmp_path, monkeypatch)
+    orch.task_store.put(HorizonTask("proof", "m", "Prove the statement", status=TaskStatus.DONE))
+    dag = {"m": {"nodes": [{"id": "T", "state": "closed"}]}}
+    review = QualityReview(orch, {"m"}, set(), False)
+    task = review.next_task(dag)
+    orch.task_store.put(task)
+    assert main(["--root", str(tmp_path), "task", "set", task.id, "--status", "done"]) == 0
+    assert review.next_task(dag) is None and review.status == "delivered"
+
+    # An older receipt can have the correct reviewed heads but cover fewer obligations.
+    proof = orch.task_store.get("proof")
+    review.record["obligations"] = _digest(([(proof.id, proof.objective, proof.updated_at)],
+                                           [], ["T"], {"m": orch.workspace.project("m").max_file_seconds}))
+    review.publish("delivered", "Verified under the previous review criteria")
+    resumed = QualityReview(orch, {"m"}, set(), False)
+    reopened = resumed.next_task(dag)
+    assert reopened and resumed.status == "quality review"
+    assert delivery.head(member) == review.record["heads"]["m"]
+    orch.task_store.put(reopened)
+    assert main(["--root", str(tmp_path), "task", "set", reopened.id, "--status", "done"]) == 0
+    assert resumed.next_task(dag) is None and resumed.status == "delivered"
+    assert QualityReview(orch, {"m"}, set(), False).next_task(dag) is None

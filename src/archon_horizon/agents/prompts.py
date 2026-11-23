@@ -15,6 +15,13 @@ from __future__ import annotations
 from .base import HorizonContext
 
 
+_PUBLIC_LEAN_API = (
+    "Choose def, structure or class by mathematical use. Refactor let/letI setup chains in statements "
+    "and preserve their meaning. For new or changed inference or notation APIs, compile and commit a "
+    "consumer using only the public import, without supplying the instance under test. "
+)
+
+
 def _task_block(context: HorizonContext) -> str:
     task = context.task
     workspace = context.workspace
@@ -85,7 +92,9 @@ def horizon_task_prompt(context: HorizonContext) -> str:
             "Follow https://mathlib.org/contribute/doc.html, https://mathlib.org/contribute/naming.html, "
             "https://mathlib.org/contribute/style.html and https://mathlib.org/contribute/commit.html. "
             "Inspect topic directories, module headers/import visibility, namespaces, sections and variable scope. "
-            "Test canonical instances from a downstream import with inferInstance; keep noncanonical choices scoped. "
+            f"{_PUBLIC_LEAN_API}"
+            "Check inferInstance or the intended notation as applicable. Trace repeated setup to "
+            "its defining API and reject extra hypotheses or wrappers that merely conceal that setup. "
             "Simplify redundant proofs (including simpa using where appropriate), keep mathematical docs and remove "
             "session history from Lean. Preserve theorem strength and verify all downstream consumers. "
             "Never change maxHeartbeats or synthInstance.maxHeartbeats or the delivery time limit. "
@@ -99,21 +108,20 @@ def horizon_task_prompt(context: HorizonContext) -> str:
         f"You are in an **Archon Horizon** workspace at `{context.workspace.root}`.\n\n"
         "First load the **`horizon`** skill at its absolute path\n"
         f"`{skill_path}` (also `$ARCHON_HORIZON_SKILL`). Your shell may start in a member "
-        "project. Follow the skill for workspace tools, commits and the final report."
+        "project. Follow the skill for tools, commits and reporting."
         f"{_stale_skill_guard(context)}\n\n"
-        "Before modifying files, inspect the required and conversational inbox lanes:\n"
+        "Before editing, check both inbox lanes:\n"
         "`\"$HORIZON_BIN\" inbox list --mine --status open --kind protection --json`\n"
         "then `\"$HORIZON_BIN\" inbox list --mine --unread --kind conversation --json`.\n"
         "Honor standing protections and answer unread conversations first.\n\n"
         "# Task\n"
         f"{_task_block(context)}\n\n"
         "Follow mathlib-conventions. Preserve maxHeartbeats and synthInstance.maxHeartbeats. "
-        "Reuse topic modules, test inferred instances from a consumer, and run Lake in the owning project. "
+        f"{_PUBLIC_LEAN_API}"
+        "Reuse topic modules and run Lake in the owning project. "
         "Commit with `$HORIZON_GIT` and a mathlib title.\n\n"
-        "This is a headless, one-shot session: advance the REAL objective, commit each\n"
-        "verified unit and any final edits, keep operational comments to the delta.\n"
-        "Before the final report, for any new certificate/context wrapper,\n"
-        "`\\leanok`/completion claim, or repeated frontier, run `honesty-reviewer`;\n"
-        "if unavailable, state why it was skipped.\n"
-        "Then write the skill's brief final report."
+        "In this headless one-shot, advance the objective, commit verified units and final edits, "
+        "and keep operational comments to changes. For new certificate/context wrappers, `\\leanok`/completion claims, "
+        "or repeated frontiers, run `honesty-reviewer`. If unavailable, record why. "
+        "Finish with the skill's brief report."
     )

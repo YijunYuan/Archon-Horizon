@@ -58,12 +58,12 @@ include-package-data = false
 version = { attr = "archon_horizon.__version__" }
 
 [tool.setuptools.package-data]
-# Non-.py data we ship: skill + subagent-descriptor markdown, and the built
-# dashboard assets (the frontend *source* and node_modules are excluded).
+# Ship the Lean reviewer, agent resources and built dashboard assets.
 "archon_horizon" = [
     "skills/**/*.md",
     "subagents/**/*.md",
     "hgraph/*.md",
+    "lean/*.lean",
     "frontend/dist/**/*",
 ]
 

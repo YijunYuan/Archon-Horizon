@@ -4,11 +4,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import signal
 import shlex
 import subprocess
 import tempfile
-import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -20,7 +18,9 @@ from archon_horizon.core.workspace import Workspace
 from archon_horizon.inboxes.filesystem import FilesystemInboxProvider
 
 from .benchmark import iter_lean_files
+from .process import run_lean_command as _run
 from .quality import source_findings
+from .signatures import SignatureCheckError, may_have_setup, signature_findings
 
 
 def directory(ws: Workspace, name: str) -> Path:
@@ -59,7 +59,7 @@ def sources(root: Path) -> list[Path]:
                   (p.suffix in (".lean", ".sh", ".bash", ".zsh") or p.name in ("lakefile.toml", "Makefile")))
 
 
-def inspect(root: Path) -> dict:
+def inspect(root: Path, *, capture_signatures: bool = False) -> dict:
     result = {}
     for p in sources(root):
         name = p.relative_to(root).as_posix()
@@ -67,8 +67,13 @@ def inspect(root: Path) -> dict:
             result[name] = {"hash": "", "issues": ["source symlink leaves the member"]}
             continue
         content = p.read_bytes()
+        source = content.decode("utf-8", "replace")
         result[name] = {"hash": hashlib.sha256(content).hexdigest(),
-                        "issues": source_findings(name, content.decode("utf-8", "replace"))}
+                        "issues": source_findings(name, source)}
+        if capture_signatures and p.suffix == ".lean" and may_have_setup(source):
+            # Baselines also cover uncommitted sources. Keep candidate text so proof-only
+            # edits don't turn an unchanged statement into a newly introduced finding.
+            result[name]["setup_source"] = source.replace("\r\n", "\n")
     return result
 
 
@@ -78,7 +83,7 @@ def baseline(ws: Workspace, name: str, *, begin: bool = False) -> dict:
         stored = read(path)
         if not stored or (begin and stored.get("delivered")):
             root = ws.project_path(name)
-            stored = {"head": head(root), "files": inspect(root)}
+            stored = {"head": head(root), "has_setup_sources": True, "files": inspect(root, capture_signatures=True)}
             with workspace_lock(ws.state_path, f"quality-questions:{name}"):
                 # The Inbox keeps the old conversations. Their decisions belong
                 # to the previous baseline, not to newly imported human work.
@@ -95,6 +100,19 @@ def mark_delivered(ws: Workspace, name: str, revision: str) -> None:
         save(path, data)
 
 
+def _baseline_setup_source(root: Path, file: str, starting: dict) -> str | None:
+    old = starting["files"].get(file)
+    if not old or starting.get("has_setup_sources"):
+        return (old or {}).get("setup_source", "")
+    # Older baselines kept only hashes. Recover the original bytes when committed.
+    # An uncommitted baseline that cannot be recovered needs a human decision.
+    if starting.get("head"):
+        blob = subprocess.run(["git", "show", starting["head"] + ":" + file], cwd=root, capture_output=True)
+        if blob.returncode == 0 and hashlib.sha256(blob.stdout).hexdigest() == old["hash"]:
+            return blob.stdout.decode("utf-8", "replace").replace("\r\n", "\n")
+    return None
+
+
 def _record_questions(ws: Workspace, name: str, entries: list[tuple[str, str, bool]]) -> dict:
     path = directory(ws, name) / "questions.json"
     with workspace_lock(ws.state_path, f"quality-questions:{name}"):
@@ -108,14 +126,43 @@ def _record_questions(ws: Workspace, name: str, entries: list[tuple[str, str, bo
                 body=(f"Existing quality issues in {name}\n\n{details}\n\n"
                       "How should Horizon handle these files? Reply here with the intended repair, "
                       "or confirm your own fix here and rerun the supervisor. To retain a listed historical style or "
-                      "heartbeat setting, write 'keep PATH' on its own line. Proof holes and file time limits "
-                      "must pass verification. Only the project owner can change the time limit."),
+                      "heartbeat setting, write 'keep PATH' on its own line. Proof holes, statement setup "
+                      "chains and file time limits must pass verification. Only the project owner can "
+                      "change the time limit."),
                 scope=InboxScope(projects=(name,), files=tuple(dict.fromkeys(e[0] for e in missing))),
                 metadata={"participants": ["human", f"project:{name}"], "started_by": f"project:{name}"},
             ))
             saved.update({json.dumps(e): item.id for e in missing})
             save(path, saved)
         return saved
+
+
+def _statement_findings(ws: Workspace, name: str, files: dict, compiled: list[str], starting: dict) -> list[dict]:
+    root = ws.project_path(name)
+    limit = ws.project(name).max_file_seconds
+    issues = []
+    inherited = []
+    for file in compiled:
+        try:
+            setups = signature_findings(root, file, per_file_seconds=limit)
+        except SignatureCheckError as exc:
+            issues.append({"file": file, "reason": f"Lean signature review failed: {exc}"})
+            continue
+        if not setups:
+            continue
+        unchanged = files[file]["hash"] == starting["files"].get(file, {}).get("hash")
+        prior_source = None if unchanged else _baseline_setup_source(root, file, starting)
+        for setup in setups:
+            issue = {"file": file, "line": setup.line, "reason": setup.reason}
+            issues.append(issue)
+            if prior_source is None or setup.header.replace("\r\n", "\n") in prior_source:
+                inherited.append(issue)
+    if inherited:
+        entries = [(i["file"], i["reason"], True) for i in inherited]
+        linked = _record_questions(ws, name, entries)
+        for issue, entry in zip(inherited, entries):
+            issue["inbox"] = linked[json.dumps(entry)]
+    return issues
 
 
 def prepare_baseline(ws: Workspace, name: str, *, begin: bool = False) -> None:
@@ -156,26 +203,6 @@ def questions(ws: Workspace, name: str) -> list[dict]:
     return result
 
 
-def _run(command: list[str], root: Path, timeout: float | None = None) -> tuple[bool, float, str]:
-    start = time.monotonic()
-    with tempfile.TemporaryFile() as output:
-        proc = subprocess.Popen(command, cwd=root, stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
-        try:
-            proc.wait(timeout=timeout)
-        except BaseException as exc:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            proc.wait()
-            if not isinstance(exc, subprocess.TimeoutExpired):
-                raise
-            return False, time.monotonic() - start, "compile time exceeded"
-        elapsed = time.monotonic() - start
-        output.seek(max(0, output.tell() - 3000))
-        return proc.returncode == 0, elapsed, output.read().decode(errors="replace").strip()
-
-
 def dirty_sources(root: Path) -> bool:
     return bool(subprocess.check_output(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all",
                                          "--", "*.lean", "*.toml", "*.sh", "*.bash", "*.zsh", "*.tex", "*.bib", "Makefile", "lean-toolchain", "lake-manifest.json"]))
@@ -198,7 +225,8 @@ def bind_review_completion(ws: Workspace, old: HorizonTask, updated: HorizonTask
 
 def check_project(ws: Workspace, name: str, *, final: bool = False) -> dict:
     root = ws.project_path(name)
-    original = baseline(ws, name)["files"]
+    starting = baseline(ws, name)
+    original = starting["files"]
     before = head(root)
     limit = ws.project(name).max_file_seconds
     files = inspect(root)
@@ -242,6 +270,7 @@ def check_project(ws: Workspace, name: str, *, final: bool = False) -> dict:
             if not ok:
                 finding(".", f"lake build failed: {error}")
             else:
+                compiled = []
                 with tempfile.TemporaryDirectory() as scratch:
                     for file in files:
                         if not file.endswith(".lean") or files[file]["hash"] == "":
@@ -260,6 +289,9 @@ def check_project(ws: Workspace, name: str, *, final: bool = False) -> dict:
                                     files[file]["hash"] == original.get(file, {}).get("hash"))
                         elif not ok:
                             finding(file, f"Lean compilation failed: {error}")
+                        else:
+                            compiled.append(file)
+                issues.extend(_statement_findings(ws, name, files, compiled, starting))
         except OSError as exc:
             finding(".", str(exc))
     if head(root) != before or inspect(root) != files or (final and before and dirty_sources(root) and not any(i["file"] == "." for i in issues)):

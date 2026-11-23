@@ -23,7 +23,8 @@ def check(ctx: typer.Context, project: str = typer.Option(..., "-p", "--project"
         for issue in report["retained"]:
             log.info(f"{issue['file']}: retained by the project owner ({issue['reason']})")
         for issue in report["issues"]:
-            log.warn(f"{issue['file']}: {issue['reason']} " + issue.get("inbox", ""))
+            location = f"{issue['file']}:{issue['line']}" if "line" in issue else issue["file"]
+            log.warn(f"{location}: {issue['reason']} " + issue.get("inbox", ""))
         if report["ok"]:
             log.success(f"Quality checks passed for {project}")
     if not report["ok"]:

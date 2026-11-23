@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from archon_horizon.agents.base import HorizonContext
 from archon_horizon.agents.prompts import horizon_task_prompt
 from archon_horizon.core.sessions import RunRecord
@@ -59,6 +61,21 @@ def test_horizon_prompt_is_directive_plus_skill(tmp_path: Path) -> None:
     assert "lean-check" in prompt and "janitor" in prompt
     assert "honesty-reviewer" in prompt
     assert len(prompt) < 2000
+
+
+@pytest.mark.parametrize("metadata", [{}, {"supervisor_source": "quality"}])
+def test_public_api_contract_reaches_worker_and_independent_reviewer(tmp_path: Path, metadata: dict[str, str]) -> None:
+    ctx = HorizonContext(
+        workspace=_workspace(tmp_path),
+        run=RunRecord(id="S-1", rounds_requested=1),
+        task=HorizonTask(id="T-1", project="ag-main", objective="Design Foo", metadata=metadata),
+    )
+    prompt = horizon_task_prompt(ctx)
+
+    assert "def, structure or class by mathematical use" in prompt
+    assert "Refactor let/letI setup chains in statements" in prompt
+    assert "compile and commit a consumer using only the public import" in prompt
+    assert "without supplying the instance under test" in prompt
 
 
 def test_horizon_skill_carries_the_load_bearing_conventions() -> None:

@@ -87,7 +87,6 @@ Reference: Author, *Title*, Thm. X.Y / §Z.
 - One primary mathematical topic per file; split when files grow huge or mix
   unrelated APIs.
 - Group namespaces by mathematical API. Use sections for shared hypotheses and the narrowest sensible `variable` scope. Inspect exported signatures for accidentally strengthened assumptions.
-- Register a canonical construction as an instance when consumers should infer it. Test `inferInstance` under the public import. Keep choices that depend on extra data explicit or local.
 - Use `exact` when sufficient and `simpa ... using h` when a single simplification closes the proof. Keep a longer proof when it is clearer or faster.
 - After moves/renames, update consumers and delete empty shells. Writable
   hygiene helpers (`janitor`) may restructure trees; lead agents own API renames.
@@ -96,9 +95,21 @@ Reference: Author, *Title*, Thm. X.Y / §Z.
 
 - Search first ([[leansearch]]); a negative result after a precise query means
   it's genuinely absent — then prove it at reusable generality.
-- **Choose the reusable abstraction** so work composes with mathlib:
-  `Filter`/`Tendsto`, bundled morphisms (`…Hom`), typeclasses over unbundled
-  functions-plus-hypotheses, unless the problem is about the lower-level object.
+- Choose the representation from the mathematical use and nearby mathlib
+  declarations. A computed value or a predicate applied to an explicit object
+  fits a `def` (e.g. `IsOpen s`). Bundle data and laws in a structure when
+  callers select an object, pass it to maps or compare two choices.
+- Use a `class` when callers should infer an ambient structure or property
+  from the available context. For example, a continuity lemma uses an
+  ambient `[TopologicalSpace X]`, while a theorem comparing two topologies
+  on `X` takes them explicitly. Register a canonical
+  construction for an existing class as an `instance` when it composes with
+  existing inference paths. Keep competing choices on the same carrier explicit
+  or local to the intended scope. Check for diamonds.
+- Reuse mathlib operations and notation with their established meaning.
+  Introduce scoped notation when familiar mathematical syntax recurs and its
+  domain determines its meaning. Check the expected type and scope in an
+  importing module. See [[api-composition]] for consumer checks.
 
 ## API thinness (avoid layered blockers)
 

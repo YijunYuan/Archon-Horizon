@@ -59,8 +59,9 @@ def _proof_tasks(workspace: Workspace, project: str, dag: dict | None, in_progre
                          "with labelled statements, proofs and dependencies. Prepare independent proof "
                          "assignments by mathematical topic. Inspect existing modules and their consumers first. Reuse a module for related lemmas, group shared APIs and hypotheses, and record file-scoped "
                          "roadmap items (`horizon roadmap add --file … --blueprint-node … --depends-on …`) or link "
-                         "their declarations in the blueprint. Include required "
-                         "interfaces and list dependencies. Leave substantial proofs to the assigned workers.")
+                         "their declarations in the blueprint. For shared interfaces, sketch a downstream "
+                         "statement and identify which data the caller chooses and which Lean should infer. "
+                         "List dependencies. Leave substantial proofs to the assigned workers.")
         yield HorizonTask(id=_derived_id(project, phase, label), project=project, projects=(project,), title=title,
                           objective=objective, write_set=WriteSet(**targets), scope=ItemScope(**targets),
                           metadata={"supervisor_source": phase,
@@ -73,7 +74,8 @@ def _file_plan(project: str, proofs: list[HorizonTask]) -> HorizonTask:
         "The following independent blueprint targets have no assigned Lean files: "
         + ", ".join(labels) + ". Inspect the project layout and record file-scoped roadmap "
         "items using --file and --blueprint-node. Group statements that belong in the same "
-        "module. Prefer an existing topic directory and record the public API, a downstream use, and dependencies. Leave the proofs to the assigned workers."
+        "module. Prefer an existing topic directory. Record the public API, a downstream use with "
+        "its expected inference and notation, and dependencies. Leave the proofs to the assigned workers."
     )
     return HorizonTask(id=_derived_id(project, "plan", "\n".join(labels)), project=project, projects=(project,),
                        title=f"Assign modules to ready proofs in {project}", objective=objective,

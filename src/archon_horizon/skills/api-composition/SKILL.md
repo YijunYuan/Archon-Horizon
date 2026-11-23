@@ -41,7 +41,30 @@ faithful source-facing API and a computational/proof adapter separate, then
 bridge them explicitly. A shorter proof is not a reason to weaken or duplicate
 the interface.
 
+## Statement design
+
+Repeated `let` or `letI` setup in an exported theorem statement calls for an
+API refactor. Trace the setup to the defining module and its consumers. Give a
+recurring mathematical construction a reusable operation, supply a canonical
+instance, or expose genuine choices as explicit data, as the mathematics
+requires. Preserve the original hypotheses and conclusion. Check that the
+original result still follows for the original inputs. Moving the chain into
+an opaque wrapper or requiring callers to assume its outputs leaves the design
+problem unresolved. Keep ordinary proof locals and meaningful mathematical
+binders, such as a named intermediate in the statement of a recurrence.
+Follow file protections and the project's inherited-issue decision process.
+
 ## Evidence
+
+For a new or changed public API that promises inference or notation, compile
+and commit a representative downstream use. An existing caller can serve.
+Import only the intended public module there, open the documented scope if
+needed, and use the actual operation or theorem. For an inferred instance,
+exercise search at the promised type with `inferInstance` or with an operation
+that needs it. Retain genuine prerequisites and remove any local `letI`,
+instance declaration or hypothesis that supplies the instance being tested.
+For notation, write it in the consumer and check its intended mathematical
+meaning, for example by proving a small equality using the named operation.
 
 Show search queries, declaration locations, import closure, instance behavior,
 and at least one meaningful consumer when claiming composition. Check a

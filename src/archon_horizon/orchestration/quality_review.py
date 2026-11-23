@@ -89,7 +89,8 @@ class QualityReview:
         limits = {n: ws.project(n).max_file_seconds for n in self.names}
         expected = self.record.get("blueprint") if self.reviewing else None
         labels = sorted(label for group in expected.values() for label in group) if expected is not None else sorted(n["id"] for n in nodes)
-        signature = _digest((sorted((t.id, t.objective, t.updated_at) for t in tasks),
+        # A receipt from before the public API review cannot attest to its consumer checks.
+        signature = _digest(("lean-public-api-v1", sorted((t.id, t.objective, t.updated_at) for t in tasks),
                              sorted((i.id, i.summary) for i in items), labels, limits))
         same = self.record.get("obligations") == signature
         cached = same and self.record.get("status") == "delivered" and self.record.get("heads") == heads
