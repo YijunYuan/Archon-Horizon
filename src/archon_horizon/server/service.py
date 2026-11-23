@@ -52,8 +52,9 @@ from archon_horizon.transcript.sink import (
 )
 from archon_horizon.transcript.subagents import materialize_subagent_sessions
 from archon_horizon.server.git_api import get_git_log, get_git_diff
-from archon_horizon.vcs.project_git import project_session_commits
+from archon_horizon.vcs.project_git import project_history_repos, project_session_commits
 from archon_horizon.lean.benchmark import benchmark_workspace
+from archon_horizon.lean.delivery import bind_review_completion
 from archon_horizon.server.source_api import file_stats, list_lean_files, read_lean_file
 from archon_horizon.vcs.git import WorkspaceGit, git_available, user_repo_git_dir
 
@@ -1542,18 +1543,15 @@ class WorkspaceService:
                 if row["sha"] not in known:
                     rows.append(row)
                     known.add(row["sha"])
-        native_repos: dict[str, WorkspaceGit] = {}
+        native_repos: dict[tuple[str, str], WorkspaceGit] = {}
         if session_log:
             for name, refs in project_session_commits(self.workspace, session_log.path).items():
-                if name not in self.workspace.projects:
-                    continue
-                project = self.workspace.project_path(name)
-                native = user_repo_git_dir(project)
-                if native:
-                    repo = WorkspaceGit(project, native)
-                    native_repos[name] = repo
+                for repo in project_history_repos(self.workspace, name):
                     for row in repo.commits_detailed_by_refs(refs):
-                        rows.append({**row, "project": name})
+                        key = (name, row["sha"])
+                        if key not in native_repos:
+                            native_repos[key] = repo
+                            rows.append({**row, "project": name})
         rows.sort(key=lambda row: row.get("date", ""), reverse=True)  # latest commit first (GH #6)
         total = len(rows)
         commit_counts: dict[str, int] = {}
@@ -1577,7 +1575,7 @@ class WorkspaceService:
         for r in rows:
             sha = r["sha"]
             project_name = r.get("project")
-            repo = native_repos.get(project_name) if project_name else None
+            repo = native_repos.get((project_name, sha))
             summary = session_change_summary(
                 repo.root if repo else self.root, sha, () if repo else paths,
                 git_dir=repo.git_dir if repo else None,
@@ -1632,11 +1630,19 @@ class WorkspaceService:
         from archon_horizon.server.changes_api import session_file_diff
 
         if project:
-            root = self._project_path(project)
-            native = user_repo_git_dir(root)
-            if native is None:
-                return {"path": path, "available": False, "diff": ""}
-            return session_file_diff(root, sha, path, git_dir=native)
+            if project in self._discover_projects():
+                root = self._project_path(project)
+                native = user_repo_git_dir(root)
+                if native and (revision := WorkspaceGit(root, native).resolve_commit(sha)):
+                    return session_file_diff(root, revision, path, git_dir=native)
+            # Only follow an archived member for a commit attributed to this session.
+            session_log = self._find_session_log(self.stores.run_logs.get(run_id), session)
+            if session_log and (refs := project_session_commits(self.workspace, session_log.path).get(project)):
+                for repo in project_history_repos(self.workspace, project):
+                    revision = repo.resolve_commit(sha)
+                    if revision in refs:
+                        return session_file_diff(repo.root, revision, path, git_dir=repo.git_dir)
+            return {"path": path, "available": False, "diff": ""}
         return session_file_diff(self.root, sha, path)
 
     def _inbox_provider_state(self) -> dict[str, Any]:
@@ -2544,7 +2550,8 @@ class WorkspaceService:
             return {"ok": True, "id": task_id}
         if action == "status":
             new_status = TaskStatus(kw["status"])
-            self.stores.tasks.put(dataclasses.replace(old, status=new_status, updated_at=datetime.now(timezone.utc)))
+            updated = dataclasses.replace(old, status=new_status, updated_at=datetime.now(timezone.utc))
+            self.stores.tasks.put(bind_review_completion(self.workspace, old, updated))
             if old.status != new_status:
                 self._record_history(self.stores.tasks, task_id, actor, "status",
                                      before=old.status.value, after=new_status.value)
@@ -2556,7 +2563,8 @@ class WorkspaceService:
 
         projects = tuple(kw.get("projects", old.projects or ((old.project,) if old.project else ())))
         project = projects[0] if projects else old.project
-        self.stores.tasks.put(self._task_from_payload(task_id, project, kw, old=old))
+        updated = self._task_from_payload(task_id, project, kw, old=old)
+        self.stores.tasks.put(bind_review_completion(self.workspace, old, updated))
         self._record_history(self.stores.tasks, task_id, actor, "edited", note="fields updated")
         return {"ok": True, "id": task_id}
 

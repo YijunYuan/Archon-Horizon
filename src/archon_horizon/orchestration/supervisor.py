@@ -192,11 +192,16 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
     status_file = state / "supervisor.json"
     next_sync = 0.
     previous_status = ""
+    stop_reason = ""
     snapshot = {}
-    options = []
     scanned = projects | {t.project for t in orch.task_store.list() if t.id in ids and t.project in orch.workspace.projects}
     review = QualityReview(orch, projects, ids, dry_run)
     scanned.update(review.names)
+    delivery_scope = None
+    if create_tasks and review.names:
+        scope = HorizonTask("delivery", review.names[0], "", projects=tuple(review.names))
+        delivery_scope = task_claim(orch.workspace, scope)
+    delivery_busy = False
     old_term = signal.getsignal(signal.SIGTERM)
 
     def interrupt(signum, frame):
@@ -233,6 +238,12 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
                     dags = future.result()
                 next_sync = time.monotonic() + max(30., config.poll_seconds)
             external = _external_claims(orch, workers)
+            was_busy = delivery_busy
+            delivery_busy = delivery_scope is not None and any(write_sets_conflict(delivery_scope, c) for c in external)
+            if was_busy and not delivery_busy and not halt:
+                # The other run may have opened or closed nodes since our last sync.
+                next_sync = 0.
+                continue
             reserved = sum(max(0., resources.worker_memory_gib - w.resident_gib()) for w in workers.values())
             slots = min(resources.admissions(config, len(workers) + len(external), reserved),
                         max(2, len(workers)))
@@ -251,13 +262,16 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
                 limit = max(1, slots)
                 candidates = _choose(orch, options, attempts, paused_tasks, occupied, rounds, limit)
 
-                if not candidates and not options and not workers and not external and create_tasks:
+                if not options and not workers and delivery_scope is not None and not delivery_busy:
                     with _monitor_delivery(status_file, config, not dry_run and slots > 0):
                         review_task = review.next_task(dags, measure=slots > 0)
+                    waiting_for_check = slots == 0 and review.status == "verifying delivery"
                     if review_task and not dry_run:
                         resources = sample_resources()
-                        slots = min(slots, resources.admissions(config, 0))
-                    waiting_for_check = bool(review_task and slots == 0)
+                        external = _external_claims(orch, workers)
+                        occupied = list(external)
+                        delivery_busy = any(write_sets_conflict(delivery_scope, c) for c in external)
+                        slots = min(slots, resources.admissions(config, len(external)))
                     if review_task:
                         options = [review_task]
                         candidates = _choose(orch, options, attempts, paused_tasks, occupied, rounds, 1)
@@ -304,11 +318,15 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
             externally_blocked = any(attempts[t.id] < rounds and t.id not in paused_tasks and
                                      any(write_sets_conflict(task_claim(orch.workspace, t), c) for c in external)
                                      for t in options)
-            if external and review.names:
-                scope = task_claim(orch.workspace, HorizonTask("delivery", review.names[0], "", projects=tuple(review.names)))
-                externally_blocked |= any(write_sets_conflict(scope, claim) for claim in external)
-            if not workers and not candidates and not externally_blocked and not waiting_for_check:
-                if not halt and review.status in ("quality review", "awaiting user", "proofs pending"):
+            waiting = externally_blocked or delivery_busy or waiting_for_check
+            if not workers and not candidates and (halt or not waiting):
+                if options and not exit_code:
+                    # No live claim can free these remaining assignments; this invocation
+                    # has used their attempts. Keep the tasks queued for the next run.
+                    exit_code = 3
+                    stop_reason = "task attempts exhausted"
+                    log.warn(stop_reason)
+                elif not halt and review.status in ("quality review", "awaiting user", "proofs pending"):
                     exit_code = 3
                     log.warn(review.detail or "Quality review requires follow-up")
                 break
@@ -320,10 +338,8 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
             if workers:
                 _stop_workers(workers)
             status = "interrupted" if interrupted else {0: "finished", 3: "paused"}.get(exit_code, "failed")
-            exhausted = any(attempts[t.id] >= rounds for t in options)
-            reason = "task attempts exhausted" if exhausted else "no ready work"
             snapshot.update(status=status, active=[], admissions=0, sampled_at=utc_now().isoformat(),
-                            reason=review.detail or (reason if status == "finished" else status))
+                            reason=stop_reason or review.detail or ("no ready work" if status == "finished" else status))
             write_text_atomic(status_file, json.dumps(snapshot))
     return {"dry_run": False, "runs": started, "reason": snapshot["reason"], "exit_code": exit_code}
 

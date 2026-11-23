@@ -9,6 +9,13 @@ minor releases; `horizon init --update` migrates a workspace's managed files.
 
 ## [Unreleased]
 
+- Final delivery verifies the Git revisions recorded when the reviewer marked
+  the review done. A later commit requires another review before delivery.
+  The next supervised run rechecks older deliveries that lack this record.
+- A scoped supervisor can review a project while an unrelated project is
+  running. If a queued assignment exhausts its attempts, the supervisor pauses
+  with exit code 3.
+- Session logs can show commits and file diffs from archived member repositories.
 - `horizon run` now supervises independent runs, using ready blueprint statements, roadmap dependencies, CPU utilization and available memory. The Dashboard shows worker assignments and resource pressure.
 - Initialization selects adaptive concurrency automatically. Run-wide output token limits are retired. Optional single-session token limits and monetary budgets remain available.
 

@@ -1076,6 +1076,11 @@ class WorkspaceGit:
         out = self._run(["rev-list", "--reverse", revision], check=False)
         return tuple(line.strip() for line in out.splitlines() if line.strip())
 
+    def resolve_commit(self, ref: str) -> str | None:
+        """Resolve a commit in this checkout, including commits reachable only by SHA."""
+        return self._run(["rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}"],
+                         check=False) or None
+
     def commits_detailed_by_refs(self, refs: Sequence[str]) -> list[dict[str, str]]:
         """Resolve commit refs and return provenance rows in the given order.
 
@@ -1087,10 +1092,7 @@ class WorkspaceGit:
         for ref in refs:
             if not ref:
                 continue
-            sha = self._run(
-                ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
-                check=False,
-            )
+            sha = self.resolve_commit(ref)
             if not sha or sha in seen:
                 continue
             seen.add(sha)

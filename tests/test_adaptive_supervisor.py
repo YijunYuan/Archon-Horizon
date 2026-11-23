@@ -1,13 +1,16 @@
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import yaml
 
+from archon_horizon.commands.ps import clear_process_marker, write_process_marker
 from archon_horizon.config.loader import build_orchestrator, load_config
+from archon_horizon.config.operations import add_project
 from archon_horizon.core.locks import task_lease
-from archon_horizon.core.tasks import HorizonTask, WriteSet
+from archon_horizon.core.tasks import HorizonTask, TaskStatus, WriteSet
 from archon_horizon.orchestration import supervisor
 from archon_horizon.orchestration.resources import Resources
 
@@ -69,8 +72,12 @@ print('Verified ' + name)
     # Another user's staged edit remains in the native index throughout the run.
     (project / "unrelated.txt").write_text("user work")
     subprocess.run(["git", "-C", str(project), "add", "unrelated.txt"], check=True)
+    add_project(tmp_path, "other", "projects/other")
     orch = build_orchestrator(tmp_path)
-    cfg = load_config(tmp_path).scheduler
+    # A separate member has a live run throughout both the proofs and delivery.
+    external = orch.run_logs.allocate()
+    write_process_marker(external.path, projects=["other"])
+    cfg = replace(load_config(tmp_path).scheduler, max_parallel_sessions=3)
     samples = iter([Resources(8, 99, 8), Resources(8, 10, 1)])
     seen = []
     status = orch.workspace.state_path / "supervisor.json"
@@ -100,6 +107,77 @@ print('Verified ' + name)
     staged = subprocess.check_output(["git", "-C", str(project), "diff", "--cached", "--name-only"], text=True)
     assert staged.strip() == "unrelated.txt"
     assert not (tmp_path / ".git").exists()
+
+
+def test_supervisor_pauses_when_queued_proof_runs_out_of_attempts(tmp_path, monkeypatch, capsys):
+    from archon_horizon.cli import main
+
+    workspace(tmp_path, {"kind": "null"})
+    orch = build_orchestrator(tmp_path)
+    task = HorizonTask("one", "math", "Verify the theorem", write_set=WriteSet(files=("One.lean",)))
+    orch.task_store.put(task)
+    monkeypatch.setattr(supervisor, "sample_resources", lambda: Resources(8, 10, 8))
+    code = main(["--root", str(tmp_path), "run", "--supervisor", task.id, "--rounds", "1",
+                 "--no-dashboard", "--json"])
+    outcome = json.loads(capsys.readouterr().out)
+    assert code == outcome["exit_code"] == 3
+    assert [r["task"] for r in outcome["runs"]] == [task.id]
+    assert orch.task_store.get(task.id).status is TaskStatus.QUEUED
+    status = json.loads((orch.workspace.state_path / "supervisor.json").read_text())
+    assert status["status"] == "paused"
+    assert status["reason"] == outcome["reason"] == "task attempts exhausted"
+
+
+def test_supervisor_refreshes_proof_frontier_when_overlapping_run_finishes(tmp_path, monkeypatch):
+    project = workspace(tmp_path, {"kind": "null"})
+    source = project / "Proof.lean"
+    source.write_text("theorem example_proof : True := by sorry\n")
+    blueprint = project / "blueprint/src"
+    blueprint.mkdir(parents=True)
+    (blueprint / "content.tex").write_text(
+        r"\begin{theorem}\label{t}\lean{example_proof}\leanok True.\end{theorem}")
+    orch = build_orchestrator(tmp_path)
+    orch.task_store.put(HorizonTask("blocked", "math", "Waiting for input", status=TaskStatus.BLOCKED))
+    external = orch.run_logs.allocate()
+    write_process_marker(external.path, projects=["math"])
+    status = orch.workspace.state_path / "supervisor.json"
+
+    def sample():
+        if (external.path / "process.json").exists() and status.exists() and (
+                json.loads(status.read_text())["status"] == "running"):
+            source.write_text("theorem example_proof : True := by trivial\n")
+            clear_process_marker(external.path)
+        return Resources(8, 10, 8)
+
+    monkeypatch.setattr(supervisor, "sample_resources", sample)
+    result = supervisor.supervise(orch, load_config(tmp_path).scheduler, {"math"}, set(), rounds=1, dry_run=False)
+    assert result["exit_code"] == 3 and result["reason"] == "blocked"
+    assert not result["runs"]
+
+
+def test_exhausted_review_retry_pauses_even_at_capacity(tmp_path, monkeypatch):
+    project = workspace(tmp_path, {"kind": "null"})
+    (project / "Proof.lean").write_text(
+        "/- Copyright (c) Test. -/\nmodule\n/-! # Test -/\npublic theorem example_proof : True := trivial\n")
+    blueprint = project / "blueprint/src"
+    blueprint.mkdir(parents=True)
+    (blueprint / "content.tex").write_text(
+        r"\begin{theorem}\label{t}\lean{example_proof}\leanok True.\end{theorem}")
+    orch = build_orchestrator(tmp_path)
+    low_capacity_polls = 0
+
+    def sample():
+        nonlocal low_capacity_polls
+        if len(orch.run_logs.ids()) >= 2:
+            low_capacity_polls += 1
+            assert low_capacity_polls < 100, "supervisor kept waiting after the last review attempt"
+            return Resources(8, 100, 8)
+        return Resources(8, 10, 8)
+
+    monkeypatch.setattr(supervisor, "sample_resources", sample)
+    result = supervisor.supervise(orch, load_config(tmp_path).scheduler, {"math"}, set(), rounds=1, dry_run=False)
+    assert [r["title"] for r in result["runs"]] == ["Final Lean quality review and repair"] * 2
+    assert low_capacity_polls and result["exit_code"] == 3 and result["reason"] == "task attempts exhausted"
 
 
 def test_unknown_scope_blocks_project_and_file_aliases_share_a_lease(tmp_path):

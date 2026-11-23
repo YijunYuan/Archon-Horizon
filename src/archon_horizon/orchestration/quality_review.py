@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import nullcontext
 
 from archon_horizon.core.locks import task_lease
 from archon_horizon.core.scope import ItemScope
@@ -91,53 +92,64 @@ class QualityReview:
         signature = _digest((sorted((t.id, t.objective, t.updated_at) for t in tasks),
                              sorted((i.id, i.summary) for i in items), labels, limits))
         same = self.record.get("obligations") == signature
-        if same and self.record.get("status") == "delivered" and self.record.get("heads") == heads:
-            # A changed uncommitted proof must never inherit the prior delivery.
-            if not any(dirty_sources(ws.project_path(n)) for n in self.names):
-                self.publish("delivered", "Verified revisions " + ", ".join(f"{n} {h[:12]}" for n, h in heads.items()))
-                return None
+        cached = same and self.record.get("status") == "delivered" and self.record.get("heads") == heads
         existing = self.record.get("task") if same and self.record.get("status") != "delivered" else None
-        task_id = existing or "review-" + _digest((self.names, signature, heads))
+        task_id = (self.record.get("task") if cached else existing) or "review-" + _digest((self.names, signature, heads))
         try:
             previous = self.orch.task_store.get(task_id)
         except FileNotFoundError:
             previous = None
+        reviewed_heads = (previous.metadata.get("reviewed_heads")
+                          if previous and previous.status is TaskStatus.DONE else None)
+        # Older delivered records have only the machine-checked revisions. Reopen them
+        # once so the semantic review also has a durable revision for every member.
+        if cached and reviewed_heads == heads and not any(dirty_sources(ws.project_path(n)) for n in self.names):
+            self.publish("delivered", "Verified revisions " + ", ".join(f"{n} {h[:12]}" for n, h in heads.items()))
+            return None
         reports = self.record.get("checks", {}) if existing else {}
         has_review = previous is not None and bool(existing)
         if not existing:
             self.record["blueprint"] = {name: sorted(labels) for name, labels in closed.items()}
-        if measure and not self.preview and (has_review or not reports):
-            guard = HorizonTask(task_id, self.names[0], "Verify member revisions", projects=tuple(self.names))
-            with task_lease(ws, guard) as acquired:
-                if not acquired:
-                    self.publish("proofs pending", "Another run holds the delivery scope")
-                    return None
+        verify = measure and not self.preview and (has_review or not reports)
+        guard = HorizonTask(task_id, self.names[0], "Verify member revisions", projects=tuple(self.names))
+        with task_lease(ws, guard) if verify else nullcontext(True) as acquired:
+            if not acquired:
+                self.publish("proofs pending", "Another run holds the delivery scope")
+                return None
+            if verify:
                 reports = {n: check_project(ws, n, final=True) for n in self.names}
-            self.record["checks"] = reports
-        all_questions = {n: questions(ws, n) for n in self.names}
-        reply_version = _digest(sorted({(q["inbox"], q["reply"]) for qs in all_questions.values()
-                                        for q in qs if q["reply"]}))
-        pending = [q["inbox"] for n, qs in all_questions.items() for q in qs if not q["reply"] and
-                   (not q.get("automatic") or any(i.get("inbox") == q["inbox"] for i in reports.get(n, {}).get("issues", [])))]
-        if has_review and pending and (measure or self.preview):
-            self.publish("awaiting user", "Reply in the Inbox: " + ", ".join(dict.fromkeys(pending)))
-            return None
-        if (has_review and measure and not self.preview and previous.status is TaskStatus.DONE
-                and previous.metadata.get("quality_replies") == reply_version
-                and not graph_issues and reports
-                and all(r["ok"] and r["revision"] == head(ws.project_path(n)) for n, r in reports.items())):
-            self.record["heads"] = {n: r["revision"] for n, r in reports.items()}
-            for name, revision in self.record["heads"].items():
-                mark_delivered(ws, name, revision)
-            count = sum(len(r.get("retained", [])) for r in reports.values())
-            detail = "All members passed the final quality review"
-            if count:
-                detail += f" with {count} explicitly retained legacy findings"
-            self.publish("delivered", detail)
-            return None
+                self.record["checks"] = reports
+            all_questions = {n: questions(ws, n) for n in self.names}
+            reply_version = _digest(sorted({(q["inbox"], q["reply"]) for qs in all_questions.values()
+                                            for q in qs if q["reply"]}))
+            pending = [q["inbox"] for n, qs in all_questions.items() for q in qs if not q["reply"] and
+                       (not q.get("automatic") or any(i.get("inbox") == q["inbox"] for i in reports.get(n, {}).get("issues", [])))]
+            if has_review and pending and (measure or self.preview):
+                self.publish("awaiting user", "Reply in the Inbox: " + ", ".join(dict.fromkeys(pending)))
+                return None
+            signed_off = (has_review and reviewed_heads == heads
+                          and previous.metadata.get("quality_replies") == reply_version and not graph_issues)
+            if signed_off and not measure and not self.preview:
+                self.publish("verifying delivery", "Waiting for capacity to verify the reviewed revisions")
+                return None
+            if (signed_off and verify and reviewed_heads == {n: r["revision"] for n, r in reports.items()}
+                    and all(reports[n]["ok"] and reviewed_heads[n] == head(ws.project_path(n))
+                            and not dirty_sources(ws.project_path(n)) for n in self.names)):
+                self.record["heads"] = reviewed_heads
+                for name, revision in self.record["heads"].items():
+                    mark_delivered(ws, name, revision)
+                count = sum(len(r.get("retained", [])) for r in reports.values())
+                detail = "All members passed the final quality review"
+                if count:
+                    detail += f" with {count} explicitly retained legacy findings"
+                self.publish("delivered", detail)
+                return None
 
         feedback = [f"{n}/{i['file']}: {i['reason']}" for n, r in reports.items() for i in r["issues"]]
         feedback.extend(graph_issues)
+        if has_review and previous.status is TaskStatus.DONE and reviewed_heads != heads:
+            feedback.append("The current revisions need semantic review: "
+                            + ", ".join(f"{n} {revision}" for n, revision in heads.items()))
         replies = [f"{n}/{q['file']}: {q['reason']} — human reply: {q['reply']}" for n, qs in all_questions.items()
                    for q in qs if q["reply"]]
         objectives = [f"{t.id}: {t.objective}" for t in tasks if not t.metadata.get("supervisor_source")
@@ -153,6 +165,7 @@ class QualityReview:
         data = {"supervisor_source": "quality"}
         if existing and previous:
             data.update(previous.metadata)
+            data.pop("reviewed_heads", None)
             run_id = self.record.get("run")
             if run_id:
                 sessions = self.orch.run_logs.get(run_id).sessions()

@@ -25,6 +25,7 @@ from archon_horizon.core.roadmap import Roadmap
 from archon_horizon.core.scope import ItemScope
 from archon_horizon.core.status_sync import roadmap_status_for_task_status
 from archon_horizon.core.tasks import HorizonTask, TaskStatus, WriteSet
+from archon_horizon.lean.delivery import bind_review_completion
 from archon_horizon.store import serde
 from archon_horizon.log import log
 
@@ -38,11 +39,6 @@ _JSON = typer.Option(False, "--json", help="Emit machine-readable JSON to stdout
 def _store(ctx: typer.Context):
     _, workspace = load_workspace(ctx.obj["root"])
     return task_store(workspace)
-
-
-def _stores(ctx: typer.Context):
-    _, workspace = load_workspace(ctx.obj["root"])
-    return task_store(workspace), roadmap_store(workspace)
 
 
 def _task_dict(task: HorizonTask) -> dict:
@@ -144,7 +140,8 @@ def set_task(
     so a task reaches a terminal status (done/blocked/failed) only when an agent
     (or human) records it here. Declare ``done`` only when the work is *fully*
     complete."""
-    store, rstore = _stores(ctx)
+    _, workspace = load_workspace(ctx.obj["root"])
+    store, rstore = task_store(workspace), roadmap_store(workspace)
     try:
         task = store.get(task_id)
     except Exception:
@@ -156,11 +153,6 @@ def set_task(
     if status is not None:
         new_status = TaskStatus(status.lower())
         changes["status"] = new_status
-        if task.status != new_status:
-            store.append_history(task_id, history_entry(actor, "status",
-                                 before=task.status.value, after=new_status.value))
-            with rstore.edit_lock():
-                _sync_roadmap_refs_from_task(rstore, task, new_status, actor)
     if priority is not None:
         changes["priority"] = priority
     if objective is not None:
@@ -171,10 +163,19 @@ def set_task(
         changes["roadmap_refs"] = tuple(roadmap_ref)
     if inbox_ref:
         changes["inbox_refs"] = tuple(inbox_ref)
+    try:
+        updated = bind_review_completion(workspace, task, dataclasses.replace(task, **changes))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--status") from exc
+    if new_status is not None and task.status != new_status:
+        store.append_history(task_id, history_entry(actor, "status",
+                             before=task.status.value, after=new_status.value))
+        with rstore.edit_lock():
+            _sync_roadmap_refs_from_task(rstore, task, new_status, actor)
     edited = [f for f in changes if f not in ("status", "updated_at")]
     if edited:
         store.append_history(task_id, history_entry(actor, "edited", note=", ".join(edited) + " updated"))
-    updated = store.put(dataclasses.replace(task, **changes))
+    updated = store.put(updated)
     tasks = store.list()
     if as_json:
         emit_json(_with_task_warnings(_task_dict(updated), tasks))

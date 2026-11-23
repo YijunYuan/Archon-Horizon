@@ -9,11 +9,13 @@ import shlex
 import subprocess
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from archon_horizon.core.atomic import write_text_atomic
 from archon_horizon.core.inbox import InboxDraft, InboxKind, InboxScope
 from archon_horizon.core.locks import workspace_lock
+from archon_horizon.core.tasks import HorizonTask, TaskStatus
 from archon_horizon.core.workspace import Workspace
 from archon_horizon.inboxes.filesystem import FilesystemInboxProvider
 
@@ -177,6 +179,21 @@ def _run(command: list[str], root: Path, timeout: float | None = None) -> tuple[
 def dirty_sources(root: Path) -> bool:
     return bool(subprocess.check_output(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all",
                                          "--", "*.lean", "*.toml", "*.sh", "*.bash", "*.zsh", "*.tex", "*.bib", "Makefile", "lean-toolchain", "lake-manifest.json"]))
+
+
+def bind_review_completion(ws: Workspace, old: HorizonTask, updated: HorizonTask) -> HorizonTask:
+    """Bind an explicit semantic sign-off to the committed sources visible at that transition."""
+    if (updated.metadata.get("supervisor_source") != "quality" or updated.status is not TaskStatus.DONE
+            or old.status is TaskStatus.DONE):
+        return updated
+    revisions = {}
+    for name in updated.projects or (updated.project,):
+        root = ws.project_path(name)
+        revision = head(root)
+        if not revision or dirty_sources(root):
+            raise ValueError(f"Commit the delivery sources in {name} before completing the quality review.")
+        revisions[name] = revision
+    return replace(updated, metadata={**updated.metadata, "reviewed_heads": revisions})
 
 
 def check_project(ws: Workspace, name: str, *, final: bool = False) -> dict:

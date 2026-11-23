@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 from archon_horizon.core.workspace import Workspace
@@ -50,6 +51,18 @@ def session_git_environment(
     return env
 
 
+def project_history_repos(workspace: Workspace, name: str) -> Iterator[WorkspaceGit]:
+    """Checkouts that can hold commits for this member, including before its name was reused."""
+    roots = [workspace.project_path(name).resolve()] if name in workspace.projects else []
+    archive = (workspace.state_path / "archive").resolve()
+    archived = (archive / name).resolve()
+    if archive in archived.parents and archived not in roots:
+        roots.append(archived)
+    for root in roots:
+        if native := user_repo_git_dir(root):
+            yield WorkspaceGit(root, native)
+
+
 def project_session_commits(
     workspace: Workspace, session_dir: Path,
 ) -> dict[str, list[str]]:
@@ -63,16 +76,9 @@ def project_session_commits(
     key = manifest["id"]
     result = {}
     for name in manifest["projects"]:
-        if name not in workspace.projects:
-            continue
-        root = workspace.project_path(name)
-        dot = user_repo_git_dir(root)
-        if dot is None:
-            continue
-        repo = WorkspaceGit(root, dot)
-        refs = repo.session_commit_refs(key)
+        refs = [sha for repo in project_history_repos(workspace, name) for sha in repo.session_commit_refs(key)]
         if refs:
-            result[name] = refs
+            result[name] = list(dict.fromkeys(refs))
     return result
 
 

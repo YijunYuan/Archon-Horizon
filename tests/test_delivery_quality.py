@@ -7,6 +7,8 @@ import sys
 import pytest
 import yaml
 
+from archon_horizon.cli import main
+from archon_horizon.server.service import WorkspaceService
 from archon_horizon.config.loader import build_orchestrator, load_config
 from archon_horizon.config.schema import ConfigError, ProjectConfig
 from archon_horizon.commands.agent_hook import hook_response
@@ -170,14 +172,16 @@ def test_human_reply_reopens_semantic_review_even_if_machine_checks_pass(tmp_pat
     dag = {"m": {"nodes": [{"id": "T", "state": "closed"}]}}
     review = QualityReview(orch, {"m"}, set(), False)
     task = review.next_task(dag)
-    orch.task_store.put(replace(task, status=TaskStatus.DONE))
+    orch.task_store.put(task)
+    assert main(["--root", str(tmp_path), "task", "set", task.id, "--status", "done"]) == 0
     issue = delivery.ask(ws, "m", "M.lean", "The module docs need a summary")
     assert review.next_task(dag) is None and review.status == "awaiting user"
     box = FilesystemInboxProvider(ws.state_path / "inbox/local")
     box.add_comment(issue, "Add a summary of the main theorem.", author="human")
     continued = review.next_task(dag)
     assert continued.id == task.id and "Add a summary" in continued.objective
-    orch.task_store.put(replace(continued, status=TaskStatus.DONE))
+    orch.task_store.put(continued)
+    assert main(["--root", str(tmp_path), "task", "set", continued.id, "--status", "done"]) == 0
     assert review.next_task(dag) is None and review.status == "delivered"
 
 
@@ -201,3 +205,65 @@ def test_retention_is_specific_to_an_inherited_finding_and_never_waives_timing(t
     issue, = delivery.check_project(ws, "m")["issues"]
     box.add_comment(issue["inbox"], "keep M.lean", author="human")
     assert not delivery.check_project(ws, "m")["ok"]
+
+
+@pytest.mark.parametrize("action", ["status", "edit"])
+def test_delivery_requires_the_reviewed_revision_of_every_member(tmp_path, monkeypatch, action):
+    _, member = fixture(tmp_path, monkeypatch)
+    other = tmp_path / "second"
+    git(tmp_path, "clone", "-q", str(member), str(other)).check_returncode()
+    config_path = tmp_path / "config.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["projects"]["second"] = {"path": "second"}
+    config_path.write_text(yaml.safe_dump(config))
+    orch = build_orchestrator(tmp_path)
+    orch.task_store.put(HorizonTask("proof", "m", "Prove the statement", status=TaskStatus.DONE))
+    dag = {name: {"nodes": [{"id": "T", "state": "closed"}]} for name in ("m", "second")}
+    review = QualityReview(orch, set(dag), set(), False)
+    task = review.next_task(dag)
+    orch.task_store.put(task)
+
+    cli = ["--root", str(tmp_path), "task", "set", task.id, "--status", "done"]
+    assert main(cli) == 0
+    first_heads = {name: delivery.head(orch.workspace.project_path(name)) for name in dag}
+    assert orch.task_store.get(task.id).metadata["reviewed_heads"] == first_heads
+    source = other / "M.lean"
+    source.write_text(source.read_text().replace("True := by trivial", "1 = 1 := rfl"))
+    git(other, "-c", "user.name=test", "-c", "user.email=test@local", "commit", "-qam", "change statement").check_returncode()
+    assert main(cli) == 0
+    assert orch.task_store.get(task.id).metadata["reviewed_heads"] == first_heads
+
+    resumed = QualityReview(orch, set(dag), set(), False)
+    reopened = resumed.next_task(dag)
+    assert reopened is not None and resumed.status == "quality review"
+    assert delivery.head(other) in reopened.objective
+    assert "reviewed_heads" not in reopened.metadata
+    orch.task_store.put(reopened)
+    dashboard = WorkspaceService(tmp_path)
+    dashboard.edit_task(action, id=reopened.id, status="done")
+    assert resumed.next_task(dag, measure=False) is None and resumed.status == "verifying delivery"
+    assert resumed.next_task(dag) is None and resumed.status == "delivered"
+    assert resumed.record["heads"] == {"m": first_heads["m"], "second": delivery.head(other)}
+
+
+def test_legacy_receipt_requires_semantic_review_and_dirty_sources_cannot_be_signed_off(tmp_path, monkeypatch):
+    orch, member = fixture(tmp_path, monkeypatch)
+    orch.task_store.put(HorizonTask("proof", "m", "Prove the statement", status=TaskStatus.DONE))
+    dag = {"m": {"nodes": [{"id": "T", "state": "closed"}]}}
+    review = QualityReview(orch, {"m"}, set(), False)
+    task = review.next_task(dag)
+    orch.task_store.put(replace(task, status=TaskStatus.DONE))
+    review.record["heads"] = {"m": delivery.head(member)}
+    review.publish("delivered", "Previously verified")
+
+    resumed = QualityReview(orch, {"m"}, set(), False)
+    reopened = resumed.next_task(dag)
+    assert reopened is not None and resumed.status == "quality review"
+    orch.task_store.put(reopened)
+    (member / "M.lean").write_text(HEADER)
+    cli = ["--root", str(tmp_path), "task", "set", reopened.id, "--status", "done"]
+    assert main(cli) != 0
+    assert orch.task_store.get(reopened.id).status == TaskStatus.QUEUED
+    git(member, "restore", "M.lean").check_returncode()
+    assert main(cli) == 0
+    assert resumed.next_task(dag) is None and resumed.status == "delivered"

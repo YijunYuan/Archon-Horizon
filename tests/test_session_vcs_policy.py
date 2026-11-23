@@ -106,6 +106,48 @@ def test_dashboard_tracks_live_and_finished_project_commits(tmp_path: Path) -> N
     assert not WorkspaceGit(tmp_path).is_repo()
 
 
+@pytest.mark.parametrize("finished", [True, False])
+def test_archived_session_commits_and_diffs_survive_name_reuse(tmp_path: Path, finished: bool) -> None:
+    _identity()
+    (tmp_path / "config.yaml").write_text("workspace: {name: ws, state_dir: .state}\nprojects: {}\n")
+    operations.add_project(tmp_path, "Algebra", "projects/first")
+    service = WorkspaceService(tmp_path)
+    run = service.stores.run_logs.allocate()
+
+    def commit_in_session(service, value):
+        session = run.new_session("horizon")
+        root = service.workspace.project_path("Algebra")
+        env = {**os.environ, **session_git_environment(service.workspace, ("Algebra",), session.path)}
+        (root / "Test.lean").write_text(f"def value := {value}\n")
+        _git(root, "add", "Test.lean")
+        _git(root, "commit", "-qm", "feat: add value", env=env)
+        if finished:
+            finish_project_session(service.workspace, session.path)
+        return session.name, _git(root, "rev-parse", "HEAD")
+
+    def assert_history(service, session, sha, value):
+        query = f"run={run.id}&session={session}"
+        view = service.serve_endpoint(f"/api/session/commits?{query}")
+        assert [(row["sha"], row["project"]) for row in view["commits"]] == [(sha, "Algebra")]
+        assert [file["path"] for file in view["commits"][0]["files"]] == ["Test.lean"]
+        diff_url = f"/api/session/file-diff?{query}&path=Test.lean&sha={sha}&project=Algebra"
+        assert diff_url in service.endpoints(include_session_details=True)
+        diff = service.serve_endpoint(diff_url)["diff"]
+        assert f"+def value := {value}" in diff
+        assert service.serve_endpoint(diff_url.replace(sha, sha[:10]))["diff"] == diff
+
+    old_session, old_sha = commit_in_session(service, 1)
+    operations.archive_project(tmp_path, "Algebra")
+    service = WorkspaceService(tmp_path)
+    assert_history(service, old_session, old_sha, 1)
+
+    operations.add_project(tmp_path, "Algebra", "projects/second")
+    service = WorkspaceService(tmp_path)
+    new_session, new_sha = commit_in_session(service, 2)
+    assert_history(service, old_session, old_sha, 1)
+    assert_history(service, new_session, new_sha, 2)
+
+
 def _commit_leak(tmp_path: Path, body: str, *, env: dict | None = None):
     """Stage a source file with ``body`` and commit it through the guarded ledger git.
     Returns (CompletedProcess, committed_content)."""
