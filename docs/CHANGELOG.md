@@ -9,6 +9,10 @@ minor releases; `horizon init --update` migrates a workspace's managed files.
 
 ## [Unreleased]
 
+- The supervisor adjusts agent concurrency using measured process-tree CPU use and memory peaks.
+  A separate queue schedules foreground Lean compilations, and an optional delegated Linux
+  cgroup limits CPU and memory across supervised jobs. The Dashboard shows the active limits
+  and compile queue.
 - Lean API review checks declaration choices against downstream mathematical use and
   requires a compiled public-import example for new or changed inference and notation.
   Repeated `let` and `letI` setup in exported theorem statements blocks delivery until

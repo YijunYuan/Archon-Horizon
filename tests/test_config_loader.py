@@ -11,10 +11,22 @@ import pytest
 from archon_horizon.config.harnesses import HarnessRegistry, UnknownHarnessKind
 from archon_horizon.config.env import load_env_file
 from archon_horizon.config.loader import build_orchestrator, build_workspace, load_config
-from archon_horizon.config.schema import HarnessConfig
+from archon_horizon.config.schema import ConfigError, HarnessConfig, SchedulerConfig
 from archon_horizon.commands.interactive import build_interactive_launch
 from archon_horizon.core.sessions import Focus, RunRecord
 from archon_horizon.core.tasks import HorizonTask, TaskStatus, WriteSet
+
+
+def test_compile_and_resource_limits(tmp_path):
+    settings = SchedulerConfig.from_raw({"max_parallel_compiles": 2, "cgroup_parent": str(tmp_path)})
+    assert settings.max_parallel_compiles == 2 and settings.cgroup_parent == str(tmp_path)
+    assert SchedulerConfig.from_raw({}).max_parallel_compiles is None
+    for invalid in (0, -1, 1.5, True, "no"):
+        with pytest.raises(ConfigError, match="max_parallel_compiles"):
+            SchedulerConfig.from_raw({"max_parallel_compiles": invalid})
+    for invalid in ("relative", False):
+        with pytest.raises(ConfigError, match="cgroup_parent"):
+            SchedulerConfig.from_raw({"cgroup_parent": invalid})
 
 
 def _queue_task(orch, task_id: str = "R-1", project: str = "ag-main") -> None:

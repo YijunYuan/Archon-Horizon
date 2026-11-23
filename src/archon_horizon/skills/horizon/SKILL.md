@@ -17,6 +17,10 @@ spawn as your **workers**, with the tools and skills available to you. A
 teams** working in parallel on the *same shared workspace* — one Lean project set,
 one roadmap/board and one inbox. Each project owns its Git repository and Lake build.
 
+Supervised runs share a queue for local compilations. Use the session's `lake` and
+`lean` commands. In a shell that resets PATH, use `"${HORIZON_LAKE:-lake}"` and
+`"${HORIZON_LEAN:-lean}"` so the supervisor can schedule that build.
+
 You do not manage other teams and they do not manage you. You coordinate through
 **shared state**, not meetings:
 

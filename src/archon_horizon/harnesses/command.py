@@ -428,6 +428,11 @@ class CommandHarness(Harness):
             request_env = request.metadata.get("env") if isinstance(request.metadata, dict) else None
             if isinstance(request_env, dict):
                 env.update({str(k): str(v) for k, v in request_env.items()})
+            if env.get("HORIZON_COMPILE_DIR") and env.get("HORIZON_LAKE"):
+                # Harnesses can install a custom PATH. Keep their toolchain behind the workspace shims.
+                from archon_horizon.orchestration.compile_gate import activate_compile_path
+                shim = os.path.dirname(env["HORIZON_LAKE"])
+                env["PATH"] = activate_compile_path(shim, env.get("PATH", os.defpath))
             extra = list(self._extra_argv(request))
             if request.resume_session_id and self._resume_args is not None:
                 extra = [*self._resume_args(request.resume_session_id), *extra]

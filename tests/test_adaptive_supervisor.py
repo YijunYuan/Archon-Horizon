@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import yaml
+import pytest
 
 from archon_horizon.commands.ps import clear_process_marker, write_process_marker
 from archon_horizon.config.loader import build_orchestrator, load_config
@@ -100,10 +101,15 @@ print('Verified ' + name)
     assert starts["conclusion"] >= max(ends["left"], ends["right"])
     for run in result["runs"]:
         directory = orch.run_logs.get(run["run"]).path
+        usage = json.loads((directory / "resources.json").read_text())
+        assert usage["exit_code"] == 0 and usage["cpu_seconds"] > 0 and usage["elapsed_seconds"] > 0
+        assert usage["max_process_rss_gib"] > 0 or usage["peak_tree_rss_gib"] > 0
         data, = directory.glob("sessions/*-horizon-*/project-git.json")
         commits = json.loads(data.read_text())["commits"].get("math", [])
         assert len(commits) == (0 if run["task"].startswith("review-") else 1)
-    assert json.loads(status.read_text())["delivery"] == "delivered"
+    final = json.loads(status.read_text())
+    assert final["delivery"] == "delivered" and final["envelope"]["mode"] == "sampled"
+    assert len(json.loads((status.parent / "worker-peaks.json").read_text())) == 4
     staged = subprocess.check_output(["git", "-C", str(project), "diff", "--cached", "--name-only"], text=True)
     assert staged.strip() == "unrelated.txt"
     assert not (tmp_path / ".git").exists()
@@ -273,3 +279,15 @@ def test_cgroup_and_affinity_limit_host_headroom(tmp_path, monkeypatch):
     config = resources.SchedulerConfig()
     assert sample.admissions(config, 0) == 1
     assert sample.admissions(config, 0, reserved_gib=2) == 0
+
+
+def test_supervisor_identifies_an_impossible_configured_reserve(tmp_path, monkeypatch):
+    from archon_horizon.config.schema import ConfigError
+
+    workspace(tmp_path, {"kind": "null"})
+    orch = build_orchestrator(tmp_path)
+    orch.task_store.put(HorizonTask("proof", "math", "Prove A", write_set=WriteSet(files=("A.lean",))))
+    config = replace(load_config(tmp_path).scheduler, min_available_memory_gib=8.)
+    monkeypatch.setattr(supervisor, "sample_resources", lambda: Resources(4, 10, 7, 8))
+    with pytest.raises(ConfigError, match="no effective memory for workers"):
+        supervisor.supervise(orch, config, set(), {"proof"}, rounds=1, dry_run=True)

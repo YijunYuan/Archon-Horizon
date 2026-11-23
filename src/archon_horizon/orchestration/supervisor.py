@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import signal
 import socket
@@ -10,13 +11,13 @@ import subprocess
 import sys
 import time
 import threading
-from contextlib import contextmanager
-from collections import Counter
+from contextlib import contextmanager, nullcontext
+from contextvars import copy_context
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, wait
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
-import psutil
 import yaml
 
 from archon_horizon.blueprint.workspace import project_dag
@@ -30,30 +31,36 @@ from archon_horizon.log import log
 from archon_horizon.hgraph.graph import HGraphError
 from archon_horizon.core.atomic import write_text_atomic
 
+from .compile_gate import compile_environment, compile_environment_scope, compile_status
 from .orchestrator import Orchestrator
 from .planning import assignments
 from .quality_review import QualityReview
-from .resources import Resources, sample_resources
+from .resources import AdmissionController, AgentBudget, Resources, WorkerUsage, agent_budget, exit_usage, process_usage, sample_resources
 from .scheduler import write_sets_conflict
+from .worker_cgroup import envelope_status, limit_command, worker_envelope
 
 
 @dataclass
 class Worker:
     task: HorizonTask
     process: subprocess.Popen
+    usage: WorkerUsage = field(default_factory=WorkerUsage)
 
-    def resident_gib(self) -> float:
-        total = 0
+    def observe(self) -> None:
+        self.usage.observe(process_usage(self.process.pid), time.monotonic())
+
+    def record_exit(self, path: Path) -> float:
+        # A normal exit writes OS accounting for jobs too short to see during a poll.
         try:
-            parent = psutil.Process(self.process.pid)
-            for p in [parent, *parent.children(recursive=True)]:
-                try:
-                    total += p.memory_info().rss
-                except psutil.NoSuchProcess:
-                    continue
-        except psutil.Error:
-            pass
-        return total / 1024**3
+            accounting = json.loads(path.read_text())
+        except FileNotFoundError:
+            accounting = {}
+        summary = self.usage.summary(time.monotonic())
+        summary.update(exit_code=self.process.returncode,
+                       cpu_seconds=max(summary["cpu_seconds"], accounting.get("cpu_seconds", 0.)),
+                       max_process_rss_gib=accounting.get("max_process_rss_gib"))
+        write_text_atomic(path, json.dumps(summary))
+        return max(summary["peak_tree_rss_gib"], summary["max_process_rss_gib"] or 0.)
 
 
 def _start(orch: Orchestrator, task: HorizonTask, resources: Resources) -> tuple[str, Worker]:
@@ -64,8 +71,9 @@ def _start(orch: Orchestrator, task: HorizonTask, resources: Resources) -> tuple
     orch.run_store.put(RunRecord(id=run.id, focus=Focus(tasks=(task.id,)),
                                  metadata={"supervised": True, "assignment": assignment}))
     with (run.path / "worker.log").open("w") as output:
-        proc = subprocess.Popen([sys.executable, "-m", "archon_horizon.orchestration.supervisor",
-                                 str(orch.workspace.root.resolve()), run.id], stdout=output,
+        command = [sys.executable, "-m", "archon_horizon.orchestration.supervisor",
+                   str(orch.workspace.root.resolve()), run.id]
+        proc = subprocess.Popen(limit_command(command), stdout=output,
                                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
     log.step(f"Run {run.id} → {task.project}: {task.title or task.id}")
     return run.id, Worker(task, proc)
@@ -75,6 +83,18 @@ def _stop_workers(workers: dict[str, Worker]) -> None:
     terminate_local_runs([w.process.pid for w in workers.values()], timeout=3)
     for worker in workers.values():
         worker.process.wait()
+
+
+def _wait_for_change(workers: dict[str, Worker], timeout: float) -> None:
+    if not workers:
+        time.sleep(timeout)
+        return
+    # A completion may unlock dependent proofs long before the next resource poll.
+    deadline = time.monotonic() + timeout
+    while (remaining := deadline - time.monotonic()) > 0:
+        if any(w.process.poll() is not None for w in workers.values()):
+            break
+        time.sleep(min(.25, remaining))
 
 
 def _external_claims(orch, workers):
@@ -116,13 +136,20 @@ def supervise(orch: Orchestrator, config: SchedulerConfig, projects: set[str], i
     with workspace_lock(state, "supervisor", wait=False) as acquired:
         if not acquired:
             raise ConfigError("A supervisor is already running in this workspace")
-        return _drive(orch, config, projects, ids, rounds, dry_run, create_tasks)
+        with worker_envelope(config, orch.workspace.root, dry_run=dry_run), (
+                nullcontext() if dry_run else compile_environment_scope(orch.workspace.root, state)):
+            return _drive(orch, config, projects, ids, rounds, dry_run, create_tasks)
 
 
-def _snapshot(status, resources, config, workers, slots=0):
+def _snapshot(status, resources, config, workers, state, slots=0, budget: AgentBudget | None = None, compiles=None):
+    budget = budget or agent_budget(resources, [w.usage for w in workers.values()], [])
+    envelope = envelope_status()
     return {"status": status, "sampled_at": utc_now().isoformat(), **asdict(resources),
-            "capacity": resources.capacity(config), "admissions": slots,
-            "active": [{"run": run, "task": w.task.id, "project": w.task.project, "title": w.task.title}
+            "capacity": resources.capacity(config, budget.cpu_cores, envelope), "admissions": slots,
+            "agent_budget": asdict(budget), "envelope": envelope,
+            "compiles": compiles if compiles is not None else compile_status(state),
+            "active": [{"run": run, "task": w.task.id, "project": w.task.project, "title": w.task.title,
+                        **w.usage.summary(time.monotonic())}
                        for run, w in workers.items()],
             "pid": os.getpid(), "host": socket.gethostname()}
 
@@ -137,10 +164,10 @@ def _monitor_delivery(path, config, enabled):
 
     def sample():
         while not stop.wait(config.poll_seconds):
-            data = _snapshot("verifying delivery", sample_resources(), config, {})
+            data = _snapshot("verifying delivery", sample_resources(), config, {}, path.parent)
             write_text_atomic(path, json.dumps(data))
 
-    thread = threading.Thread(target=sample, daemon=True)
+    thread = threading.Thread(target=copy_context().run, args=(sample,), daemon=True)
     thread.start()
     try:
         yield
@@ -190,6 +217,15 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
     halt = False
     state = orch.workspace.state_path
     status_file = state / "supervisor.json"
+    peaks_file = state / "worker-peaks.json"
+    recent_peaks: deque[float] = deque(maxlen=8)
+    try:
+        peaks = json.loads(peaks_file.read_text())
+        if isinstance(peaks, list):
+            recent_peaks.extend(v for v in peaks if isinstance(v, (int, float)) and math.isfinite(v) and v > 0)
+    except (FileNotFoundError, ValueError):
+        pass
+    controller = AdmissionController()
     next_sync = 0.
     previous_status = ""
     stop_reason = ""
@@ -204,6 +240,12 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
     delivery_busy = False
     old_term = signal.getsignal(signal.SIGTERM)
 
+    def finish(run_id, worker):
+        peak = worker.record_exit(orch.run_logs.get(run_id).path / "resources.json")
+        if peak > 0:
+            recent_peaks.append(peak)
+            write_text_atomic(peaks_file, json.dumps(list(recent_peaks)))
+
     def interrupt(signum, frame):
         raise KeyboardInterrupt
 
@@ -213,7 +255,9 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
             for run_id, worker in list(workers.items()):
                 code = worker.process.poll()
                 if code is None:
+                    worker.observe()
                     continue
+                finish(run_id, worker)
                 del workers[run_id]
                 next_sync = 0.
                 if code:
@@ -229,11 +273,13 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
                 # On a large paper a sync can outlast multiple telemetry intervals.
                 # Keep sampling while the graph is refreshed, before admitting workers.
                 with ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(_refresh_dags, orch, scanned, dry_run)
+                    future = pool.submit(copy_context().run, _refresh_dags, orch, scanned, dry_run)
                     while not wait([future], timeout=config.poll_seconds).done:
                         resources = sample_resources()
                         if not dry_run:
-                            snapshot = _snapshot("reading blueprint", resources, config, workers)
+                            for worker in workers.values():
+                                worker.observe()
+                            snapshot = _snapshot("reading blueprint", resources, config, workers, state)
                             write_text_atomic(status_file, json.dumps(snapshot))
                     dags = future.result()
                 next_sync = time.monotonic() + max(30., config.poll_seconds)
@@ -244,9 +290,10 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
                 # The other run may have opened or closed nodes since our last sync.
                 next_sync = 0.
                 continue
-            reserved = sum(max(0., resources.worker_memory_gib - w.resident_gib()) for w in workers.values())
-            slots = min(resources.admissions(config, len(workers) + len(external), reserved),
-                        max(2, len(workers)))
+            compiles = {} if dry_run else compile_status(state)
+            slots, budget, waiting_reason = controller.poll(
+                resources, config, [w.usage for w in workers.values()], len(external),
+                list(recent_peaks), envelope_status(), time.monotonic(), compiles)
             occupied = external + [task_claim(orch.workspace, w.task) for w in workers.values()]
             candidates = []
             options = []
@@ -271,7 +318,7 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
                         external = _external_claims(orch, workers)
                         occupied = list(external)
                         delivery_busy = any(write_sets_conflict(delivery_scope, c) for c in external)
-                        slots = min(slots, resources.admissions(config, len(external)))
+                        slots = min(slots, resources.admissions(config, len(external), envelope=envelope_status()))
                     if review_task:
                         options = [review_task]
                         candidates = _choose(orch, options, attempts, paused_tasks, occupied, rounds, 1)
@@ -279,8 +326,13 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
                         options = proof_options
                         candidates = _choose(orch, options, attempts, paused_tasks, occupied, rounds, limit)
 
+            reserve = config.min_available_memory_gib
+            if (candidates or waiting_for_check) and not workers and reserve is not None and (
+                    resources.total_gib is not None and reserve >= resources.total_gib):
+                raise ConfigError("scheduler.min_available_memory_gib leaves no effective memory for workers")
             if dry_run:
                 return {"dry_run": True, "resources": asdict(resources), "admissions": slots,
+                        "agent_budget": asdict(budget), "envelope": envelope_status(),
                         "planned": [{"task": t.id, "title": t.title, "projects": t.projects}
                                     for t in candidates[:slots]], "exit_code": 0}
 
@@ -300,18 +352,13 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
             if any(w.task.metadata.get("supervisor_source") != "quality" for w in workers.values()):
                 mode = "running"
             if candidates and slots == 0:
-                if resources.cpu_percent >= config.max_cpu_percent:
-                    mode = "waiting for CPU"
-                elif resources.available_gib - reserved < resources.memory_reserve(config) + resources.worker_memory_gib:
-                    mode = "waiting for memory"
-                else:
-                    mode = "at capacity"
+                mode = waiting_reason
             if halt:
                 mode = "draining"
             if mode != previous_status:
                 log.info(f"Supervisor {mode} ({resources.cpu_percent:.0f}% CPU, {resources.available_gib:.1f} GiB available)")
                 previous_status = mode
-            snapshot = _snapshot(mode, resources, config, workers, slots)
+            snapshot = _snapshot(mode, resources, config, workers, state, slots, budget, compiles)
             if review.status:
                 snapshot.update(delivery=review.status, detail=review.detail)
             write_text_atomic(status_file, json.dumps(snapshot))
@@ -330,18 +377,27 @@ def _drive(orch, config, projects, ids, rounds, dry_run, create_tasks):
                     exit_code = 3
                     log.warn(review.detail or "Quality review requires follow-up")
                 break
-            time.sleep(config.poll_seconds)
+            delay = config.poll_seconds
+            if workers and not halt and not budget.measured and waiting_reason == "at capacity":
+                running = {w.task.id for w in workers.values()}
+                if any(t.id not in running for t in options):
+                    delay = min(1., delay)
+            _wait_for_change(workers, delay)
     finally:
         signal.signal(signal.SIGTERM, old_term)
         if not dry_run:
             interrupted = bool(workers) or sys.exc_info()[0] is not None
             if workers:
                 _stop_workers(workers)
+                for run_id, worker in workers.items():
+                    finish(run_id, worker)
             status = "interrupted" if interrupted else {0: "finished", 3: "paused"}.get(exit_code, "failed")
             snapshot.update(status=status, active=[], admissions=0, sampled_at=utc_now().isoformat(),
+                            envelope=envelope_status(), compiles=compile_status(state),
                             reason=stop_reason or review.detail or ("no ready work" if status == "finished" else status))
             write_text_atomic(status_file, json.dumps(snapshot))
-    return {"dry_run": False, "runs": started, "reason": snapshot["reason"], "exit_code": exit_code}
+    return {"dry_run": False, "runs": started, "reason": snapshot["reason"], "exit_code": exit_code,
+            "envelope": envelope_status()}
 
 
 def _worker(root: Path, run_id: str) -> int:
@@ -351,8 +407,13 @@ def _worker(root: Path, run_id: str) -> int:
     cfg, ws = load_workspace(root)
     _, providers = inbox_providers(cfg, ws)
     orch = build_orchestrator(root, inbox_providers=providers)
-    orch.run(orch.run_store.get(run_id))
-    return 3 if orch.last_paused else 0
+    os.environ.update(compile_environment(ws.root, ws.state_path))
+    os.environ["HORIZON_COMPILE_WORKER_PID"] = str(os.getpid())
+    try:
+        orch.run(orch.run_store.get(run_id))
+        return 3 if orch.last_paused else 0
+    finally:
+        write_text_atomic(orch.run_logs.get(run_id).path / "resources.json", json.dumps(exit_usage()))
 
 
 if __name__ == "__main__":

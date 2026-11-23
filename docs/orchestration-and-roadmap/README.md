@@ -48,7 +48,13 @@ Use repeatable `--file` and `--blueprint-node` options on `horizon roadmap add` 
 
 Each assignment has its own numbered run, agent process, transcript and project commits. Disjoint files can be worked on together. A task without precise files claims its project. `horizon ps` lists the workers, and the Dashboard overview shows assignments, CPU utilization, available memory and the last sample time.
 
-The supervisor samples the host and visible Linux cgroup v2 limits. Its admission estimate starts at two cores and up to two GiB per new worker, with a smaller memory allowance on small hosts. It ramps up while work is ready and waits to launch more workers under pressure. Active workers can finish and commit. The supervisor follows newly unlocked assignments until it runs out of ready work. `--rounds` bounds attempts per task during this invocation. Individual runs can be resumed by ID. A service or authentication limit stops further dispatch.
+The supervisor samples the host, its CPU affinity and visible Linux cgroup v2 limits. It starts with a conservative budget, then measures each worker's whole process tree. Sustained low CPU demand while agents wait for model replies allows additional independent proofs to start. Recent CPU demand, memory peaks and falling headroom limit subsequent launches. Write conflicts, dependencies and delegation limits continue to govern which proofs can run.
+
+Foreground Lean/Lake jobs have a separate workspace-wide queue. Workers get `lake` and `lean` on PATH and absolute `HORIZON_LAKE` and `HORIZON_LEAN` paths for shells which replace PATH. A shell or external tool that calls its own compiler by absolute path can bypass the software queue. The optional kernel limits apply to all descendants in the worker group. External resource pressure can keep a build queued until capacity returns or the caller cancels. Queue time is recorded separately from timed Lean delivery checks. See [resource configuration](../configuration/README.md#kernel-limits-for-supervised-jobs-on-linux).
+
+The Dashboard shows active runs, running and waiting compiles, and the resource control mode. Per-run `resources.json` records CPU time and observed peak RSS. Sampled RSS sums live processes and can count shared pages more than once. To compare scheduling policies, run `python scripts/benchmark_supervisor.py` with the same active Lean toolchain, CPU affinity, node count and model delay. It uses a disposable blueprint, a synthetic model wait and real Lean verification, and reports wall time through final delivery.
+
+`--rounds` bounds attempts per task during this invocation. Individual runs can be resumed by ID. A service or authentication limit stops further dispatch.
 
 ### Final quality review
 

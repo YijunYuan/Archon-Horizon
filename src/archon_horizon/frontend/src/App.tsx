@@ -46,7 +46,10 @@ type HorizonState = {
   workspace_root?: string;
   supervisor?: {
     status: string; delivery?: string; detail?: string; sampled_at: string; cpu_percent?: number; available_gib?: number;
-    capacity?: number; active: {run: string; task: string; title: string; project: string}[];
+    capacity?: number;
+    compiles?: {active: number; waiting: number};
+    envelope?: {mode: string; cpu_quota_cores?: number; memory_max_bytes?: number};
+    active: {run: string; task: string; title: string; project: string; peak_tree_rss_gib?: number}[];
   };
   config_dir?: string;
   projects?: string[];
@@ -230,12 +233,21 @@ function Overview({ state }: PageProps) {
           {state.supervisor.cpu_percent != null && ` · CPU ${state.supervisor.cpu_percent.toFixed(0)}%`}
           {state.supervisor.available_gib != null && ` · ${state.supervisor.available_gib.toFixed(1)} GiB available`}
           {` · ${state.supervisor.active.length} active runs`}</p>
+        {state.supervisor.compiles && <p>
+          {`Compiles · ${state.supervisor.compiles.active} active · ${state.supervisor.compiles.waiting} waiting`}
+        </p>}
+        {state.supervisor.envelope && <p>
+          {state.supervisor.envelope.mode === 'cgroup-v2'
+            ? `Worker cgroup · ${state.supervisor.envelope.cpu_quota_cores?.toFixed(2)} CPU cores · ${((state.supervisor.envelope.memory_max_bytes ?? 0) / 2 ** 30).toFixed(2)} GiB limit`
+            : 'Resource control · sampled admission'}
+        </p>}
         {state.supervisor.delivery && <p><strong>{state.supervisor.delivery}</strong>{' · '}{state.supervisor.detail}
           {state.supervisor.delivery === 'awaiting user' && <> · <Link to="/inbox">Reply in Inbox</Link></>}
         </p>}
         {state.supervisor.active.map(row => <div key={row.run}>
           <Link to={`/tasks?task=${encodeURIComponent(row.task)}`}>{row.title}</Link>
           {` · ${row.project} · Run ${row.run}`}
+          {row.peak_tree_rss_gib != null && ` · peak RSS ${row.peak_tree_rss_gib.toFixed(2)} GiB`}
         </div>)}
       </Panel>}
 

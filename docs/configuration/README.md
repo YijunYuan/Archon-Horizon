@@ -62,13 +62,44 @@ Global defaults for the workspace and the collaboration loop (see [`WorkspaceCon
 | `rounds` | `1` | Maximum Horizon sessions per run. Long runs may choose the read-only `ground` helper at convergence checkpoints. |
 | `horizon_agent.harness` | — | Named harness (from `harnesses:`) that runs the Horizon agent. |
 | `scheduler.max_parallel_sessions` | unset | Legacy setting for selecting tasks within a direct run. The supervisor sizes parallel runs from live resources, including in workspaces created by the old wizard. |
+| `scheduler.max_parallel_compiles` | adaptive | Optional positive upper bound on simultaneous managed foreground Lean/Lake jobs across the workspace. Resource pressure may allow fewer. |
 | `scheduler.poll_seconds` | `5` | Interval between resource and worker checks. |
-| `scheduler.min_available_memory_gib` | adaptive | Host reserve, by default the smaller of 2 GiB and 20% of effective memory. Each new worker also needs the smaller of 2 GiB and one-third of that memory. |
-| `scheduler.max_cpu_percent` | `90` | CPU utilization at which the supervisor defers new workers. |
+| `scheduler.min_available_memory_gib` | adaptive | Keep this much memory available. The default is the smaller of 2 GiB and 20% of effective memory. The supervisor budgets separately for workers and compilations using observed process-tree peaks. |
+| `scheduler.max_cpu_percent` | `90` | CPU admission threshold. With a dedicated cgroup, also sets the group's CPU quota as a fraction of effective CPU capacity. |
+| `scheduler.cgroup_parent` | unset | Absolute path to a delegated Linux cgroup v2 parent for aggregate kernel limits on supervised workers and delivery builds. The default uses sampled admission and inherits any existing OS limits. |
 | `budget.session_tokens_out` | unlimited | Optional interruption threshold for one agent session. Its run records the pause and can be resumed. |
 | `budget.run_cost_usd` | unlimited | Optional per-run monetary budget. |
 
 Output tokens are recorded in `horizon usage`. Older `budget.run_tokens_out` entries are ignored.
+
+### Kernel limits for supervised jobs on Linux
+
+Set `workspace.scheduler.cgroup_parent` to an existing, unpopulated parent below
+`/sys/fs/cgroup` with `cpu` and `memory` enabled in `cgroup.subtree_control`. Run Horizon from a
+sibling leaf within the same delegation so it can move its children into the worker group.
+Horizon creates one child group for the workspace. It sets `memory.max` from the available
+memory at startup after the configured reserve and sets `memory.high` to 90% of that limit.
+The worker processes, their descendants and supervisor-launched delivery checks share the CPU
+and memory budget. The supervisor stays outside the group and reports throttling and memory events.
+A job that exhausts the hard limit can be killed by the kernel. An unusable configured parent
+produces an error before proof workers are launched. When multiple workspaces share one host,
+set an aggregate limit on their common parent if they must share a single hard budget.
+
+For example, a systemd user service with `Delegate=cpu memory` and `DelegateSubgroup=manager`
+(systemd 254+) provides a delegated parent and a separate leaf for Horizon. Within that service
+enable the controllers and read the parent path for `cgroup_parent` with the commands below.
+
+```sh
+member="/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)"
+test "$(basename "$member")" = manager || exit 1
+parent=$(dirname "$member")
+printf '+cpu +memory\n' > "$parent/cgroup.subtree_control"
+printf '%s\n' "$parent"
+```
+
+Use a stable unit name for a stable configured path. Run the supervisor in that service.
+The Dashboard shows the applied CPU quota and memory ceiling. The workspace's
+`supervisor.json` under its state directory records the kernel counters.
 
 ### `workspace.delegation`
 

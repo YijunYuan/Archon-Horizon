@@ -84,17 +84,27 @@ class SchedulerConfig:
     min_available_memory_gib: float | None = None
     max_cpu_percent: float = 90.0
     poll_seconds: float = 5.0
+    max_parallel_compiles: int | None = None
+    cgroup_parent: str | None = None
 
     @classmethod
     def from_raw(cls, data: dict[str, Any]) -> "SchedulerConfig":
         try:
             max_sessions = data.get("max_parallel_sessions")
             reserve = data.get("min_available_memory_gib")
+            compiles = data.get("max_parallel_compiles")
+            if compiles is not None and (not str(compiles).isdecimal() or int(compiles) < 1):
+                raise ValueError("max_parallel_compiles must be a positive integer")
+            parent = data.get("cgroup_parent")
+            if parent is not None and (not isinstance(parent, str) or not Path(parent).is_absolute()):
+                raise ValueError("cgroup_parent must be the absolute path of a delegated cgroup v2 directory")
             settings = cls(
                 max_parallel_sessions=int(max_sessions) if max_sessions is not None else None,
                 min_available_memory_gib=float(reserve) if reserve is not None else None,
                 max_cpu_percent=float(data.get("max_cpu_percent", 90)),
                 poll_seconds=float(data.get("poll_seconds", 5)),
+                max_parallel_compiles=int(compiles) if compiles is not None else None,
+                cgroup_parent=parent,
             )
         except (ValueError, TypeError) as exc:
             raise ConfigError(f"Invalid workspace.scheduler setting: {exc}") from exc
